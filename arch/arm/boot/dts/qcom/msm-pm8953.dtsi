@@ -33,6 +33,7 @@
 			interrupt-names = "kpdpwr", "resin", "kpdpwr-bark",
 				"resin-bark", "kpdpwr-resin-bark";
 			qcom,pon-dbc-delay = <15625>;
+			qcom,store-hard-reset-reason;
 			qcom,system-reset;
 
 			qcom,pon_1 {
