@@ -251,7 +251,7 @@ static struct notifier_block wnb = {
 	.notifier_call = wcnss_notif_cb,
 };
 #ifdef CONFIG_HUAWEI_WIFI
-#define NVBIN_FILE                "../../vendor/etc/wifi/WCNSS_hw_wlan_nv.bin"
+#define NVBIN_FILE                "../wifi/WCNSS_hw_wlan_nv.bin"
 #define NVBIN_FILE_QCOM_DEFAULT   "wlan/prima/WCNSS_qcom_wlan_nv.bin"
 #define NVBIN_PATH_LENTH           70
 #else
@@ -2457,7 +2457,7 @@ void construct_nvbin_with_pubfd(char *nvbin_path)
         pr_err("%s get pubfd failed;\n", __func__);
         return;
     }
-    strncpy(nvbin_path_with_pubfd, "../../vendor/etc/wifi/WCNSS_hw_wlan_nv_",NVBIN_PATH_LENTH - 1);
+    strncpy(nvbin_path_with_pubfd, "../wifi/WCNSS_hw_wlan_nv_",NVBIN_PATH_LENTH - 1);
     pr_err("%s line:%d nvbin_path_with_pubfd:%s;\n", __func__,__LINE__,nvbin_path_with_pubfd);
 
     strncat(nvbin_path_with_pubfd,pubfd,NVBIN_PATH_LENTH - 1);
