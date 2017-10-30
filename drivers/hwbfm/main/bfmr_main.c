@@ -64,7 +64,7 @@ static int __init early_parse_bfmr_enable_flag(char *p)
     {
         if (0 == strncmp(p, "1", strlen("1")))
         {
-            s_is_bfmr_enabled = 1;
+            s_is_bfmr_enabled = 0;
         }
         else
         {
