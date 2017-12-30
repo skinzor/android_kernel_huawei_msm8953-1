@@ -149,6 +149,12 @@ source "drivers/usb/phy/Kconfig"
 
 source "drivers/usb/gadget/Kconfig"
 
+config HUAWEI_USB
+	bool "Use Huawei usb code"
+	default n
+	---help---
+	  use Huawei usb feature
+
 config USB_LED_TRIG
 	bool "USB LED Triggers"
 	depends on LEDS_CLASS && USB_COMMON && LEDS_TRIGGERS
@@ -159,4 +165,6 @@ config USB_LED_TRIG
 	  LEDs and you want to use them as activity indicators for USB host or
 	  gadget.
 
+source "drivers/usb/switch/Kconfig"
+source "drivers/usb/typec/Kconfig"
 endif # USB_SUPPORT

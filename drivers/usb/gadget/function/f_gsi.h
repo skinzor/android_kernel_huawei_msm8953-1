@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2015-2016, 2018 The Linux Foundation. All rights reserved.
- *
+ * Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
+
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
@@ -20,9 +20,10 @@
 #define GSI_CTRL_NAME_LEN (sizeof(GSI_MBIM_CTRL_NAME)+2)
 #define GSI_MAX_CTRL_PKT_SIZE 4096
 
-#define GSI_NUM_IN_BUFFERS 15
+#define GSI_NUM_IN_BUFFERS 7
 #define GSI_IN_BUFF_SIZE 2048
-#define GSI_NUM_OUT_BUFFERS 14
+#define GSI_NUM_OUT_BUFFERS 7
+#define GSI_ECM_NUM_OUT_BUFFERS 31
 #define GSI_OUT_AGGR_SIZE 24576
 
 #define GSI_IN_RNDIS_AGGR_SIZE 9216
@@ -77,14 +78,6 @@ enum connection_state {
 	STATE_SUSPENDED
 };
 
-enum gsi_ctrl_notify_state {
-	GSI_CTRL_NOTIFY_NONE,
-	GSI_CTRL_NOTIFY_CONNECT,
-	GSI_CTRL_NOTIFY_SPEED,
-	GSI_CTRL_NOTIFY_OFFLINE,
-	GSI_CTRL_NOTIFY_RESPONSE_AVAILABLE,
-};
-
 #define MAXQUEUELEN 128
 struct event_queue {
 	u8 event[MAXQUEUELEN];
@@ -99,10 +92,9 @@ struct gsi_ntb_info {
 };
 
 struct gsi_ctrl_pkt {
-	void				*buf;
-	int				len;
-	enum gsi_ctrl_notify_state	type;
-	struct list_head		list;
+	void			*buf;
+	int			len;
+	struct list_head	list;
 };
 
 struct gsi_function_bind_info {
@@ -140,13 +132,22 @@ struct gsi_function_bind_info {
 	u32 notify_buf_len;
 };
 
+enum gsi_ctrl_notify_state {
+	GSI_CTRL_NOTIFY_NONE,
+	GSI_CTRL_NOTIFY_CONNECT,
+	GSI_CTRL_NOTIFY_SPEED,
+	GSI_CTRL_NOTIFY_OFFLINE,
+	GSI_CTRL_NOTIFY_RESPONSE_AVAILABLE,
+};
+
 struct gsi_ctrl_port {
 	char name[GSI_CTRL_NAME_LEN];
 	struct miscdevice ctrl_device;
 
 	struct usb_ep *notify;
 	struct usb_request *notify_req;
-	bool notify_req_queued;
+	int notify_state;
+	atomic_t notify_count;
 
 	atomic_t ctrl_online;
 
@@ -168,7 +169,6 @@ struct gsi_ctrl_port {
 	unsigned copied_from_modem;
 	unsigned modem_to_host;
 	unsigned cpkt_drop_cnt;
-	unsigned get_encap_cnt;
 };
 
 struct gsi_data_port {
@@ -227,10 +227,6 @@ struct f_gsi {
 
 	struct gsi_data_port d_port;
 	struct gsi_ctrl_port c_port;
-	/* To test remote wakeup using debugfs */
-	struct timer_list debugfs_rw_timer;
-	u8 debugfs_rw_enable;
-	u16 debugfs_rw_interval;
 };
 
 static struct f_gsi *gsi_prot_ctx[IPA_USB_MAX_TETH_PROT_SIZE];
@@ -519,7 +515,7 @@ static struct usb_endpoint_descriptor rndis_gsi_fs_out_desc = {
 };
 
 static struct usb_descriptor_header *gsi_eth_fs_function[] = {
-	(struct usb_descriptor_header *) &rndis_gsi_iad_descriptor,
+	(struct usb_descriptor_header *) &gsi_eth_fs_function,
 	/* control interface matches ACM, not Ethernet */
 	(struct usb_descriptor_header *) &rndis_gsi_control_intf,
 	(struct usb_descriptor_header *) &rndis_gsi_header_desc,

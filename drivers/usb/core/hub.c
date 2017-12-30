@@ -48,11 +48,6 @@ static void hub_event(struct work_struct *work);
 /* synchronize hub-port add/remove and peering operations */
 DEFINE_MUTEX(usb_port_peer_mutex);
 
-static bool skip_extended_resume_delay = 1;
-module_param(skip_extended_resume_delay, bool, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(skip_extended_resume_delay,
-		"removes extra delay added to finish bus resume");
-
 /* cycle leds on hubs that aren't blinking for attention */
 static bool blinkenlights = 0;
 module_param (blinkenlights, bool, S_IRUGO);
@@ -611,12 +606,6 @@ void usb_kick_hub_wq(struct usb_device *hdev)
 		kick_hub_wq(hub);
 }
 
-void usb_flush_hub_wq(void)
-{
-	flush_workqueue(hub_wq);
-}
-EXPORT_SYMBOL(usb_flush_hub_wq);
-
 /*
  * Let the USB core know that a USB 3.0 device has sent a Function Wake Device
  * Notification, which indicates it had initiated remote wakeup.
@@ -1042,11 +1031,11 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
 
 	/* Continue a partial initialization */
 	if (type == HUB_INIT2 || type == HUB_INIT3) {
-		device_lock(hub->intfdev);
+		device_lock(&hdev->dev);
 
 		/* Was the hub disconnected while we were waiting? */
 		if (hub->disconnected) {
-			device_unlock(hub->intfdev);
+			device_unlock(&hdev->dev);
 			kref_put(&hub->kref, hub_release);
 			return;
 		}
@@ -1252,7 +1241,7 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
 			queue_delayed_work(system_power_efficient_wq,
 					&hub->init_work,
 					msecs_to_jiffies(delay));
-			device_unlock(hub->intfdev);
+			device_unlock(&hdev->dev);
 			return;		/* Continues at init3: below */
 		} else {
 			msleep(delay);
@@ -1276,7 +1265,7 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
 		usb_autopm_put_interface_async(to_usb_interface(hub->intfdev));
 
 	if (type == HUB_INIT2 || type == HUB_INIT3)
-		device_unlock(hub->intfdev);
+		device_unlock(&hdev->dev);
 
 	kref_put(&hub->kref, hub_release);
 }
@@ -1304,6 +1293,8 @@ static void hub_quiesce(struct usb_hub *hub, enum hub_quiescing_type type)
 {
 	struct usb_device *hdev = hub->hdev;
 	int i;
+
+	cancel_delayed_work_sync(&hub->init_work);
 
 	/* hub_wq and related activity won't re-trigger */
 	hub->quiescing = 1;
@@ -3406,9 +3397,7 @@ int usb_port_resume(struct usb_device *udev, pm_message_t msg)
 		/* drive resume for USB_RESUME_TIMEOUT msec */
 		dev_dbg(&udev->dev, "usb %sresume\n",
 				(PMSG_IS_AUTO(msg) ? "auto-" : ""));
-		if (!skip_extended_resume_delay)
-			usleep_range(USB_RESUME_TIMEOUT * 1000,
-					(USB_RESUME_TIMEOUT + 1) * 1000);
+		msleep(USB_RESUME_TIMEOUT);
 
 		/* Virtual root hubs can trigger on GET_PORT_STATUS to
 		 * stop resume signaling.  Then finish the resume
@@ -3417,7 +3406,7 @@ int usb_port_resume(struct usb_device *udev, pm_message_t msg)
 		status = hub_port_status(hub, port1, &portstatus, &portchange);
 
 		/* TRSMRCY = 10 msec */
-		usleep_range(10000, 10500);
+		msleep(10);
 	}
 
  SuspendCleared:

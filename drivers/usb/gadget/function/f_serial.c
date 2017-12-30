@@ -4,7 +4,7 @@
  * Copyright (C) 2003 Al Borchers (alborchers@steinerpoint.com)
  * Copyright (C) 2008 by David Brownell
  * Copyright (C) 2008 by Nokia Corporation
- * Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
  *
  * This software is distributed under the terms of the GNU General
  * Public License ("GPL") as published by the Free Software Foundation,
@@ -24,6 +24,10 @@
 #include "u_serial.h"
 #include "gadget_chips.h"
 #include "usb_gadget_xport.h"
+
+#ifdef CONFIG_HUAWEI_USB
+#include <linux/usb/huawei_usb.h>
+#endif
 
 
 /*
@@ -106,6 +110,21 @@ static long gser_ioctl(struct file *fp, unsigned cmd, unsigned long arg);
 static void gser_ioctl_set_transport(struct f_gser *gser,
 				unsigned int transport);
 
+#ifdef CONFIG_HUAWEI_USB
+static unsigned char usb_if_protocol_table[GSERIAL_NO_PORTS] = {
+	USB_IF_PROTOCOL_HW_MODEM, /* hw modem interface */
+	USB_IF_PROTOCOL_HW_PCUI,  /* hw PCUI for AT command */
+	USB_IF_PROTOCOL_NOPNP
+};
+
+static unsigned char ACM_GET_TYPE(unsigned int port_num)
+{
+	if (port_num < GSERIAL_NO_PORTS) {
+		return usb_if_protocol_table[port_num];
+	}
+	return (unsigned char)USB_IF_PROTOCOL_NOPNP;
+}
+#endif
 
 static const struct file_operations gser_fops = {
 	.owner = THIS_MODULE,
@@ -142,10 +161,17 @@ static struct usb_interface_descriptor gser_interface_desc = {
 	.bDescriptorType =	USB_DT_INTERFACE,
 	/* .bInterfaceNumber = DYNAMIC */
 	.bNumEndpoints =	3,
+#ifndef CONFIG_HUAWEI_USB
 	.bInterfaceClass =	USB_CLASS_VENDOR_SPEC,
 	.bInterfaceSubClass =	0,
 	.bInterfaceProtocol =	0,
 	/* .iInterface = DYNAMIC */
+#else
+	.bInterfaceClass =	USB_IF_CLASS_HW_PNP21,
+	.bInterfaceSubClass =	USB_IF_SUBCLASS_HW_PNP21,
+	.bInterfaceProtocol =	0,
+	/* .iInterface = DYNAMIC */
+#endif
 };
 
 static struct usb_cdc_header_desc gser_header_desc  = {
@@ -379,7 +405,7 @@ static int gport_connect(struct f_gser *gser)
 	unsigned	port_num;
 	int		ret;
 
-	pr_debug("%s: transport: %s f_gser: %pK gserial: %pK port_num: %d\n",
+	pr_debug("%s: transport: %s f_gser: %p gserial: %p port_num: %d\n",
 			__func__, xport_to_str(gser->transport),
 			gser, &gser->port, gser->port_num);
 
@@ -425,7 +451,7 @@ static int gport_disconnect(struct f_gser *gser)
 
 	port_num = gserial_ports[gser->port_num].client_port_num;
 
-	pr_debug("%s: transport: %s f_gser: %pK gserial: %pK port_num: %d\n",
+	pr_debug("%s: transport: %s f_gser: %p gserial: %p port_num: %d\n",
 			__func__, xport_to_str(gser->transport),
 			gser, &gser->port, gser->port_num);
 
@@ -626,7 +652,7 @@ static void gser_suspend(struct usb_function *f)
 
 	port_num = gserial_ports[gser->port_num].client_port_num;
 
-	pr_debug("%s: transport: %s f_gser: %pK gserial: %pK port_num: %d\n",
+	pr_debug("%s: transport: %s f_gser: %p gserial: %p port_num: %d\n",
 			__func__, xport_to_str(gser->transport),
 			gser, &gser->port, gser->port_num);
 
@@ -648,7 +674,7 @@ static void gser_resume(struct usb_function *f)
 
 	port_num = gserial_ports[gser->port_num].client_port_num;
 
-	pr_debug("%s: transport: %s f_gser: %pK gserial: %pK port_num: %d\n",
+	pr_debug("%s: transport: %s f_gser: %p gserial: %p port_num: %d\n",
 			__func__, xport_to_str(gser->transport),
 			gser, &gser->port, gser->port_num);
 	/*
@@ -896,6 +922,10 @@ static int gser_bind(struct usb_configuration *c, struct usb_function *f)
 	gser->data_id = status;
 	gser_interface_desc.bInterfaceNumber = status;
 
+#ifdef CONFIG_HUAWEI_USB
+	gser_interface_desc.bInterfaceProtocol = ACM_GET_TYPE(gser->port_num);
+#endif
+
 	status = -ENODEV;
 
 	/* allocate instance-specific endpoints */
@@ -1111,22 +1141,17 @@ static struct usb_function *gser_alloc(struct usb_function_instance *fi)
 	struct f_gser	*gser;
 	struct f_serial_opts *opts;
 
-	opts = container_of(fi, struct f_serial_opts, func_inst);
-	if (nr_ports) {
-		opts->port_num = gser_next_free_port++;
-		if (opts->port_num >= GSERIAL_NO_PORTS) {
-			pr_err("%s: No serial allowed for port %d\n",
-					__func__, opts->port_num);
-			return ERR_PTR(-EINVAL);
-		}
-	}
-
 	/* allocate and initialize one new instance */
 	gser = kzalloc(sizeof(*gser), GFP_KERNEL);
 	if (!gser)
 		return ERR_PTR(-ENOMEM);
 
+	opts = container_of(fi, struct f_serial_opts, func_inst);
+
 	spin_lock_init(&gser->lock);
+	if (nr_ports)
+		opts->port_num = gser_next_free_port++;
+
 	gser->port_num = opts->port_num;
 
 	gser->port.func.name = "gser";
@@ -1196,7 +1221,6 @@ int gserial_init_port(int port_num, const char *name,
 		no_smd_ports++;
 		break;
 	case USB_GADGET_XPORT_CHAR_BRIDGE:
-		gserial_ports[port_num].client_port_num = no_char_bridge_ports;
 		no_char_bridge_ports++;
 		break;
 	case USB_GADGET_XPORT_HSIC:
@@ -1217,14 +1241,6 @@ int gserial_init_port(int port_num, const char *name,
 	return ret;
 }
 
-void gserial_deinit_port(void)
-{
-	no_char_bridge_ports = 0;
-	no_tty_ports = 0;
-	no_smd_ports = 0;
-	no_hsic_sports = 0;
-	nr_ports = 0;
-}
 
 bool gserial_is_connected(void)
 {
