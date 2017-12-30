@@ -50,6 +50,9 @@
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/almk.h>
+#ifdef CONFIG_HUAWEI_KSTATE
+#include <linux/hw_kcollect.h>
+#endif
 
 #ifdef CONFIG_HIGHMEM
 #define _ZONE ZONE_HIGHMEM
@@ -60,7 +63,12 @@
 #define CREATE_TRACE_POINTS
 #include "trace/lowmemorykiller.h"
 
+#ifdef CONFIG_HUAWEI_KERNEL_DEBUG
+extern ssize_t write_log_to_exception(const char* category, char level, const char* msg);
+static uint32_t lowmem_debug_level = 2;
+#else
 static uint32_t lowmem_debug_level = 1;
+#endif
 static short lowmem_adj[6] = {
 	0,
 	1,
@@ -397,6 +405,13 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 	int array_size = ARRAY_SIZE(lowmem_adj);
 	int other_free;
 	int other_file;
+#ifdef CONFIG_HUAWEI_KERNEL_DEBUG
+	/* judge if killing the process of the adj == 0
+	* 0: not kill the adj 0
+	* 1: kill the adj 0
+	*/
+	int kill_adj_0 = 0;
+#endif
 
 	if (mutex_lock_interruptible(&scan_mutex) < 0)
 		return 0;
@@ -522,15 +537,25 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 			     sc->gfp_mask);
 
 		if (lowmem_debug_level >= 2 && selected_oom_score_adj == 0) {
+#ifdef CONFIG_HUAWEI_KERNEL_DEBUG
+			kill_adj_0 = 1;
+#endif
 			show_mem(SHOW_MEM_FILTER_NODES);
 			dump_tasks(NULL, NULL);
 		}
 
 		lowmem_deathpending_timeout = jiffies + HZ;
 		set_tsk_thread_flag(selected, TIF_MEMDIE);
+#ifdef CONFIG_HUAWEI_KSTATE
+		hwkillinfo(selected->tgid, 0);  /*0 stand for low memory kill*/
+#endif
 		send_sig(SIGKILL, selected, 0);
 		rem += selected_tasksize;
 		rcu_read_unlock();
+#ifdef CONFIG_HUAWEI_KERNEL_DEBUG
+		if (1 == kill_adj_0)
+			write_log_to_exception("LMK-EXCEPTION", 'C', "lower memory killer exception");
+#endif
 		/* give the system time to free up the memory */
 		msleep_interruptible(20);
 		trace_almk_shrink(selected_tasksize, ret,
