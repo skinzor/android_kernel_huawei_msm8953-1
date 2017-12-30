@@ -419,4 +419,11 @@ config DA_CONSOLE
 	help
 	  This enables a console on a Dash channel.
 
+config HANDSET_SYSRQ_RESET
+	bool "Sysrq reset trigger by handset key pressing"
+	default n
+	help
+	  This enables sysrq reset when volume down, up and power key are
+	  pressed simultaneously.
+
 endif # TTY

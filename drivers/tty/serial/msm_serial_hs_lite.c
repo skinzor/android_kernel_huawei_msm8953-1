@@ -1423,6 +1423,19 @@ static inline void wait_for_xmitr(struct uart_port *port)
 }
 
 #ifdef CONFIG_SERIAL_MSM_HSL_CONSOLE
+extern char *saved_command_line;
+static bool is_serial_log_enabled(void)
+{
+	if (strstr(saved_command_line, "console=ttyHSL0,115200,n8") != NULL) {
+		pr_info("serial log enable \n");
+		return true;
+	}
+
+	pr_info("serial log disable \n");
+
+	return false;
+}
+
 static void msm_hsl_console_putchar(struct uart_port *port, int ch)
 {
 	unsigned int vid = UART_TO_MSM(port)->ver_id;
@@ -1727,6 +1740,14 @@ static int msm_serial_hsl_probe(struct platform_device *pdev)
 		return -ENXIO;
 
 	pr_info("detected port #%d (ttyHSL%d)\n", pdev->id, line);
+
+#ifdef CONFIG_SERIAL_MSM_HSL_CONSOLE
+	/* Port 0(uart 2) used for console. */
+	if (!is_serial_log_enabled() && 0 == pdev->id) {
+		pr_info("serial console disabled, do not register ttyHSL0.\n");
+		return -ENODEV;
+	}
+#endif
 
 	port = get_port_from_line(line);
 	port->dev = &pdev->dev;
