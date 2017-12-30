@@ -50,11 +50,24 @@
 #include <linux/dma-buf.h>
 #include "mdss_fb.h"
 #include "mdss_mdp_splash_logo.h"
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_LOG_JANK
+#include <huawei_platform/log/log_jank.h>
+#endif
+#endif
 #define CREATE_TRACE_POINTS
 #include "mdss_debug.h"
 #include "mdss_smmu.h"
 #include "mdss_mdp.h"
-
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+#include <linux/hw_lcd_common.h>
+#include "mdss_mdp.h"
+#include "hw_lcd_debug.h"
+#endif
+#else
+#include "lcdkit_fb.h"
+#endif
 #ifdef CONFIG_FB_MSM_TRIPLE_BUFFER
 #define MDSS_FB_NUM 3
 #else
@@ -73,6 +86,10 @@
 #else
 #define BLANK_FLAG_LP	FB_BLANK_VSYNC_SUSPEND
 #define BLANK_FLAG_ULP	FB_BLANK_NORMAL
+#endif
+
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+static bool charger_mode = false;
 #endif
 
 static struct fb_info *fbi_list[MAX_FBI_LIST];
@@ -478,6 +495,136 @@ static ssize_t mdss_mdp_show_blank_event(struct device *dev,
 
 	return ret;
 }
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+static ssize_t mdss_show_inversion_mode(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	int ret;
+	LCD_LOG_DBG("fb%d inversion mode = %d\n", mfd->index, mfd->panel_info->inversion_mode);
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n",mfd->panel_info->inversion_mode);
+	return ret;
+}
+static ssize_t mdss_store_inversion_mode(struct device *dev,
+			     struct device_attribute *attr,const char *buf, size_t count)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdss_panel_data *pdata = NULL;
+	int ret;
+	char ** last = NULL;
+	u32 temp = 0;
+
+	temp = simple_strtoul(buf, last, 0);
+	pdata = dev_get_platdata(&mfd->pdev->dev);
+
+	if ((pdata) && (pdata->set_inversion_mode)&&(mdss_fb_is_power_on(mfd)))
+	{
+		if(temp != mfd->panel_info->inversion_mode)
+		{
+			ret = pdata->set_inversion_mode(pdata,temp);
+			if(ret)
+				return ret;
+
+			mfd->panel_info->inversion_mode = temp;
+		}
+	}
+	else
+	{
+		LCD_LOG_ERR("This panel maybe sleep ,or can not support set inversion mode\n");
+		return -EINVAL;
+	}
+	return count;
+}
+static ssize_t mdss_show_panel_status(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdss_panel_data *pdata = NULL;
+	int ret = 0;
+
+	pdata = dev_get_platdata(&mfd->pdev->dev);
+
+	if ((pdata) && (pdata->check_panel_status)&&(mdss_fb_is_power_on(mfd)))
+	{
+		ret = pdata->check_panel_status(pdata);
+	}
+	else
+	{
+		LCD_LOG_ERR("This panel maybe sleep ,or can not support check panel status\n");
+	}
+
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n",ret);
+	return ret;
+}
+
+/* Change the stage of backlight from 255 to 4095.*/
+static ssize_t mdss_show_panel_info(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	int ret;
+	u32 bl_level_max;
+	u32 bl_level_min;
+	char *lcdtype;
+
+	bl_level_max = mfd->panel_info->lcdc.bl_level_max;
+	bl_level_min = mfd->panel_info->lcdc.bl_level_min;
+	lcdtype = mfd->panel_info->lcdc.lcdtype;
+
+	LCD_LOG_INFO("fb%d panel_info = blmax:%u,blmin:%u,lcdtype:%s,\n", mfd->index,bl_level_max,bl_level_min,lcdtype);
+	ret = scnprintf(buf, PAGE_SIZE, "blmax:%u,blmin:%u,lcdtype:%s,\n",bl_level_max,bl_level_min,lcdtype);
+	return ret;
+}
+
+static ssize_t mdss_show_lcd_model(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	int ret;
+	char *lcd_model;
+
+	lcd_model = mfd->panel_info->panel_name;
+
+	LCD_LOG_INFO("fb%d lcd_model: %s\n", mfd->index, lcd_model);
+	ret = scnprintf(buf, PAGE_SIZE, "%s\n", lcd_model);
+	return ret;
+}
+
+static ssize_t mdss_show_lcd_checksum(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct mdss_panel_data *pdata = NULL;
+	int ret = 0;
+
+	pdata = dev_get_platdata(&mfd->pdev->dev);
+	if (pdata == NULL){
+		LCD_LOG_ERR("%s: Invalid input data\n", __func__);
+		return -EINVAL;
+	}
+
+	if ((pdata->panel_frame_checksum)&&(mfd->panel_power_state == MDSS_PANEL_POWER_ON))
+	{
+		ret = pdata->panel_frame_checksum(pdata);
+		LCD_LOG_INFO("%s:lcd_checksum=%d\n",__func__,ret);
+	}
+	else
+	{
+		LCD_LOG_ERR("This panel maybe sleep or can not support lcd-frame-checkum!\n");
+	}
+
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n",ret);
+	return ret;
+}
+#endif
+#endif
 
 static void __mdss_fb_idle_notify_work(struct work_struct *work)
 {
@@ -781,6 +928,15 @@ static DEVICE_ATTR(msm_fb_panel_status, S_IRUGO | S_IWUSR,
 	mdss_fb_get_panel_status, mdss_fb_force_panel_dead);
 static DEVICE_ATTR(msm_fb_dfps_mode, S_IRUGO | S_IWUSR,
 	mdss_fb_get_dfps_mode, mdss_fb_change_dfps_mode);
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+static DEVICE_ATTR(inversion_mode, S_IRUGO|S_IWUSR|S_IWGRP, mdss_show_inversion_mode, mdss_store_inversion_mode);
+static DEVICE_ATTR(panel_status, S_IRUGO, mdss_show_panel_status, NULL);
+static DEVICE_ATTR(panel_info, S_IRUGO, mdss_show_panel_info, NULL);
+static DEVICE_ATTR(lcd_model, S_IRUGO, mdss_show_lcd_model, NULL);
+static DEVICE_ATTR(lcd_checksum, S_IRUGO, mdss_show_lcd_checksum, NULL);
+#endif
+#endif
 static struct attribute *mdss_fb_attrs[] = {
 	&dev_attr_msm_fb_type.attr,
 	&dev_attr_msm_fb_split.attr,
@@ -792,6 +948,15 @@ static struct attribute *mdss_fb_attrs[] = {
 	&dev_attr_msm_fb_thermal_level.attr,
 	&dev_attr_msm_fb_panel_status.attr,
 	&dev_attr_msm_fb_dfps_mode.attr,
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	&dev_attr_inversion_mode.attr,
+	&dev_attr_panel_status.attr,
+	&dev_attr_panel_info.attr,
+	&dev_attr_lcd_model.attr,
+	&dev_attr_lcd_checksum.attr,
+#endif
+#endif
 	NULL,
 };
 
@@ -814,6 +979,7 @@ static void mdss_fb_remove_sysfs(struct msm_fb_data_type *mfd)
 	sysfs_remove_group(&mfd->fbi->dev->kobj, &mdss_fb_attr_group);
 }
 
+#ifndef CONFIG_LCDKIT_DRIVER
 static void mdss_fb_shutdown(struct platform_device *pdev)
 {
 	struct msm_fb_data_type *mfd = platform_get_drvdata(pdev);
@@ -829,6 +995,7 @@ static void mdss_fb_shutdown(struct platform_device *pdev)
 	sysfs_notify(&mfd->fbi->dev->kobj, NULL, "show_blank_event");
 	unlock_fb_info(mfd->fbi);
 }
+#endif
 
 static void mdss_fb_input_event_handler(struct input_handle *handle,
 				    unsigned int type,
@@ -1153,6 +1320,11 @@ static int mdss_fb_probe(struct platform_device *pdev)
 		return rc;
 
 	mdss_fb_create_sysfs(mfd);
+
+#ifdef CONFIG_LCDKIT_DRIVER
+    lcdkit_fb_create_sysfs(&mfd->fbi->dev->kobj);
+#endif
+
 	mdss_fb_send_panel_event(mfd, MDSS_EVENT_FB_REGISTERED, fbi);
 
 	if (mfd->mdp.init_fnc) {
@@ -1216,6 +1388,13 @@ static int mdss_fb_probe(struct platform_device *pdev)
 
 	INIT_DELAYED_WORK(&mfd->idle_notify_work, __mdss_fb_idle_notify_work);
 
+#ifdef CONFIG_LCDKIT_DRIVER
+    /* init lcd debugfs interface */
+	lcdkit_debugfs_init();
+
+    lcdkit_set_fb_pdev(pdev);
+#endif
+
 	return rc;
 }
 
@@ -1249,6 +1428,10 @@ static int mdss_fb_remove(struct platform_device *pdev)
 
 	if (!mfd)
 		return -ENODEV;
+
+#ifdef CONFIG_LCDKIT_DRIVER
+    lcdkit_fb_remove_sysfs(&mfd->fbi->dev->kobj);
+#endif
 
 	mdss_fb_remove_sysfs(mfd);
 
@@ -1519,7 +1702,10 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 	u32 temp = bkl_lvl;
 	bool ad_bl_notify_needed = false;
 	bool bl_notify_needed = false;
-
+#if defined(CONFIG_HUAWEI_KERNEL_LCD) || defined(CONFIG_LCDKIT_DRIVER)
+	unsigned long timeout;
+	timeout = jiffies + HZ/10 ;
+#endif
 	if ((((mdss_fb_is_power_off(mfd) && mfd->dcm_state != DCM_ENTER)
 		|| !mfd->allow_bl_update) && !IS_CALIB_MODE_BL(mfd)) ||
 		mfd->panel_info->cont_splash_enabled) {
@@ -1553,7 +1739,33 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 			if (mfd->bl_level != bkl_lvl)
 				bl_notify_needed = true;
 			pr_debug("backlight sent to panel :%d\n", temp);
+
+			#if defined(CONFIG_HUAWEI_KERNEL_LCD) || defined(CONFIG_LCDKIT_DRIVER)
+			/*cancle the esd esd delay work before set backlight */
+			mdss_dsi_status_check_ctl(mfd,false);
+			#endif
+
 			pdata->set_backlight(pdata, temp);
+
+			#if defined(CONFIG_HUAWEI_KERNEL_LCD) || defined(CONFIG_LCDKIT_DRIVER)
+			/*schedule esd delay work again*/
+			mdss_dsi_status_check_ctl(mfd,true);
+			#endif
+
+            #ifdef CONFIG_LCDKIT_DRIVER
+			if(!time_before(jiffies, timeout)){
+				LCDKIT_INFO(": set backlight time = %u\n",
+			 		jiffies_to_msecs(jiffies-timeout+HZ/10));
+			}
+			#else
+			#ifdef CONFIG_HUAWEI_KERNEL_LCD
+			if(!time_before(jiffies, timeout)){
+				LCD_LOG_INFO("%s: set backlight time = %u\n",
+			 		__func__,jiffies_to_msecs(jiffies-timeout+HZ/10));
+			}
+			#endif
+			#endif
+
 			mfd->bl_level = bkl_lvl;
 			mfd->bl_level_scaled = temp;
 		}
@@ -1565,6 +1777,20 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 				NOTIFY_TYPE_BL_UPDATE);
 	}
 }
+
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+void mdss_fb_update_backlight_wq_handler(struct work_struct *work)
+{
+	struct msm_fb_data_type *mfd;
+	mfd = container_of(to_delayed_work(work), struct msm_fb_data_type, bkl_work);
+	if(charger_mode){
+		mfd->unset_bl_level = MDSS_MAX_BL_BRIGHTNESS / 2;
+	}
+	mdss_fb_update_backlight(mfd);
+}
+#endif
+#endif
 
 void mdss_fb_update_backlight(struct msm_fb_data_type *mfd)
 {
@@ -1591,6 +1817,7 @@ void mdss_fb_update_backlight(struct msm_fb_data_type *mfd)
 			mfd->bl_level_scaled = mfd->unset_bl_level;
 			mfd->allow_bl_update = true;
 		}
+
 	}
 	mutex_unlock(&mfd->bl_lock);
 }
@@ -1710,6 +1937,16 @@ static int mdss_fb_blank_blank(struct msm_fb_data_type *mfd,
 	mfd->op_enable = true;
 	complete(&mfd->power_off_comp);
 
+#ifdef CONFIG_LCDKIT_DRIVER
+	lcdkit_info.panel_infos.frame_updated = 0;
+	LCDKIT_DEBUG(": frame_updated setted to 0 when panel off \n");
+#else
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	mfd->frame_updated = 0;
+	LCD_LOG_DBG("%s: frame_updated setted to 0 when panel off \n",__func__);
+#endif
+#endif
+
 	return ret;
 }
 
@@ -1717,9 +1954,28 @@ static int mdss_fb_blank_unblank(struct msm_fb_data_type *mfd)
 {
 	int ret = 0;
 	int cur_power_state;
+#if defined(CONFIG_HUAWEI_KERNEL_LCD) || defined(CONFIG_LCDKIT_DRIVER)
+	struct mdss_panel_data *pdata = NULL;
+#endif
 
 	if (!mfd)
 		return -EINVAL;
+
+#ifdef CONFIG_LCDKIT_DRIVER
+	pdata = dev_get_platdata(&mfd->pdev->dev);
+	if (!pdata) {
+		LCDKIT_ERR("mdss_fb_blank_unblank: no panel operation detected!\n");
+		return -ENODEV;
+	}
+#else
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	pdata = dev_get_platdata(&mfd->pdev->dev);
+	if (!pdata) {
+		LCD_LOG_ERR( "mdss_fb_blank_unblank: no panel operation detected!\n");
+		return -ENODEV;
+	}
+#endif
+#endif
 
 	if (mfd->panel_info->debugfs_info)
 		mdss_panel_validate_debugfs_info(mfd);
@@ -1730,6 +1986,12 @@ static int mdss_fb_blank_unblank(struct msm_fb_data_type *mfd)
 		if (IS_ERR_VALUE(ret))
 			return ret;
 	}
+
+#ifdef CONFIG_HUAWEI_DSM
+	lcd_pwr_status.lcd_dcm_pwr_status |= BIT(0);
+	do_gettimeofday(&lcd_pwr_status.tvl_unblank);
+	time_to_tm(lcd_pwr_status.tvl_unblank.tv_sec, 0, &lcd_pwr_status.tm_unblank);
+#endif
 
 	cur_power_state = mfd->panel_power_state;
 	pr_debug("Transitioning from %d --> %d\n", cur_power_state,
@@ -1749,7 +2011,13 @@ static int mdss_fb_blank_unblank(struct msm_fb_data_type *mfd)
 			mdss_fb_stop_disp_thread(mfd);
 			goto error;
 		}
-
+ /*fix the qcom bug :when display system reset,backlight is off*/
+#if defined(CONFIG_HUAWEI_KERNEL_LCD) || defined(CONFIG_LCDKIT_DRIVER)
+			if(mfd->panel_info->panel_dead ==true)
+			{
+				pdata->set_backlight(pdata, mfd->ad_bl_level);
+			}
+#endif
 		mfd->panel_power_state = MDSS_PANEL_POWER_ON;
 		mfd->panel_info->panel_dead = false;
 		mutex_lock(&mfd->update.lock);
@@ -1783,9 +2051,13 @@ static int mdss_fb_blank_unblank(struct msm_fb_data_type *mfd)
 			 */
 			if (IS_CALIB_MODE_BL(mfd))
 				mdss_fb_set_backlight(mfd, mfd->calib_mode_bl);
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifndef CONFIG_HUAWEI_KERNEL_LCD
 			else if ((!mfd->panel_info->mipi.post_init_delay) &&
 				(mfd->unset_bl_level != U32_MAX))
 				mdss_fb_set_backlight(mfd, mfd->unset_bl_level);
+#endif
+#endif
 
 			/*
 			 * it blocks the backlight update between unblank and
@@ -1848,7 +2120,15 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 	switch (blank_mode) {
 	case FB_BLANK_UNBLANK:
 		pr_debug("unblank called. cur pwr state=%d\n", cur_power_state);
+#ifdef CONFIG_HUAWEI_DSM
+		lcd_pwr_status.panel_power_on = 1;
+#endif
 		ret = mdss_fb_blank_unblank(mfd);
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+			mfd->panel_info->inversion_mode = COLUMN_INVERSION;
+#endif
+#endif
 		break;
 	case BLANK_FLAG_ULP:
 		req_power_state = MDSS_PANEL_POWER_LP2;
@@ -1882,7 +2162,19 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 	default:
 		req_power_state = MDSS_PANEL_POWER_OFF;
 		pr_debug("blank powerdown called\n");
+#ifdef CONFIG_LCDKIT_DRIVER
+		cancel_delayed_work_sync(&lcdkit_info.panel_infos.bkl_work);
+        mdss_dsi_status_check_ctl(mfd,false);
+#else
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+		cancel_delayed_work_sync(&mfd->bkl_work);
+		mdss_dsi_status_check_ctl(mfd,false);
+#endif
+#endif
 		ret = mdss_fb_blank_blank(mfd, req_power_state);
+#ifdef CONFIG_HUAWEI_DSM
+		lcd_pwr_status.panel_power_on = 0;
+#endif
 		break;
 	}
 
@@ -2535,6 +2827,15 @@ static int mdss_fb_register(struct msm_fb_data_type *mfd)
 	init_waitqueue_head(&mfd->ioctl_q);
 	init_waitqueue_head(&mfd->kickoff_wait_q);
 
+#ifdef CONFIG_LCDKIT_DRIVER
+	INIT_DELAYED_WORK(&lcdkit_info.panel_infos.bkl_work,
+	                        mdss_fb_update_backlight_wq_handler);
+#else
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	INIT_DELAYED_WORK(&mfd->bkl_work, mdss_fb_update_backlight_wq_handler);
+#endif
+#endif
+
 	ret = fb_alloc_cmap(&fbi->cmap, 256, 0);
 	if (ret)
 		pr_err("fb_alloc_cmap() failed!\n");
@@ -2586,6 +2887,9 @@ static int mdss_fb_open(struct fb_info *info, int user)
 	}
 
 	if (!mfd->ref_cnt) {
+#ifdef CONFIG_LOG_JANK
+		LOG_JANK_D(JLID_KERNEL_LCD_OPEN,"%s", "JL_KERNEL_LCD_OPEN");
+#endif
 		result = mdss_fb_blank_sub(FB_BLANK_UNBLANK, info,
 					   mfd->op_enable);
 		if (result) {
@@ -2797,6 +3101,14 @@ static int __mdss_fb_wait_for_fence_sub(struct msm_sync_pt_data *sync_pt_data,
 	}
 
 	if (ret < 0) {
+#ifdef CONFIG_HUAWEI_DSM
+		/* report fence dsm error */
+		#ifdef CONFIG_LCDKIT_DRIVER
+		lcdkit_report_dsm_err(DSM_LCD_MDSS_FENCE_ERROR_NO,0,ret,0);
+		#else
+		lcd_report_dsm_err(DSM_LCD_MDSS_FENCE_ERROR_NO,ret,0);
+		#endif
+#endif
 		pr_err("%s: sync_fence_wait failed! ret = %x\n",
 				sync_pt_data->fence_name, ret);
 		for (; i < fence_cnt; i++)
@@ -3444,6 +3756,30 @@ static int __mdss_fb_perform_commit(struct msm_fb_data_type *mfd)
 	int ret = -ENOSYS;
 	u32 new_dsi_mode, dynamic_dsi_switch = 0;
 
+#ifdef CONFIG_LCDKIT_DRIVER
+	if(!lcdkit_info.panel_infos.frame_updated){
+		lcdkit_info.panel_infos.frame_updated = 1;
+#ifdef CONFIG_HUAWEI_DSM
+		lcd_pwr_status.lcd_dcm_pwr_status |= BIT(2);
+		do_gettimeofday(&lcd_pwr_status.tvl_set_frame);
+		time_to_tm(lcd_pwr_status.tvl_set_frame.tv_sec, 0, &lcd_pwr_status.tm_set_frame);
+#endif
+		LCDKIT_INFO(":begin to display the first frame.\n");
+	}
+#else
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	if(!mfd->frame_updated){
+		mfd->frame_updated = 1;
+#ifdef CONFIG_HUAWEI_DSM
+		lcd_pwr_status.lcd_dcm_pwr_status |= BIT(2);
+		do_gettimeofday(&lcd_pwr_status.tvl_set_frame);
+		time_to_tm(lcd_pwr_status.tvl_set_frame.tv_sec, 0, &lcd_pwr_status.tm_set_frame);
+#endif
+		LCD_LOG_INFO("%s:begin to display the first frame.\n",__func__);
+	}
+#endif
+#endif
+
 	if (!sync_pt_data->async_wait_fences)
 		mdss_fb_wait_for_fence(sync_pt_data);
 	sync_pt_data->flushed = false;
@@ -3493,9 +3829,17 @@ static int __mdss_fb_perform_commit(struct msm_fb_data_type *mfd)
 	}
 
 skip_commit:
-	if (!ret)
+	if (!ret){
+#ifdef CONFIG_LCDKIT_DRIVER
+		schedule_delayed_work(&lcdkit_info.panel_infos.bkl_work, msecs_to_jiffies(15));
+#else
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+		schedule_delayed_work(&mfd->bkl_work,msecs_to_jiffies(15));
+#else
 		mdss_fb_update_backlight(mfd);
-
+#endif
+#endif
+	}
 	if (IS_ERR_VALUE(ret) || !sync_pt_data->flushed) {
 		mdss_fb_release_kickoff(mfd);
 		mdss_fb_signal_timeline(sync_pt_data);
@@ -4855,3 +5199,28 @@ void mdss_fb_report_panel_dead(struct msm_fb_data_type *mfd)
 		KOBJ_CHANGE, envp);
 	pr_err("Panel has gone bad, sending uevent - %s\n", envp[0]);
 }
+
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+static int __init early_parse_boot_mode(char *arg)
+{
+	int len = 0;
+
+	if (arg) {
+		len = strlen(arg);
+		if(!strcmp(arg,"charger")) {
+			charger_mode = true;
+			pr_debug("%s: charger mode\n", __func__);
+		} else {
+			charger_mode = false;
+			pr_debug("%s: not charger mode\n", __func__);
+		}
+	}
+	return 0;
+}
+early_param("androidboot.mode", early_parse_boot_mode);
+#endif
+
+#ifdef CONFIG_LCDKIT_DRIVER
+#include "lcdkit_fb.c"
+#endif
+

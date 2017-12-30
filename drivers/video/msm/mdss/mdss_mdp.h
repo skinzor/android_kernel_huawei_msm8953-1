@@ -27,6 +27,11 @@
 #include "mdss_mdp_hwio.h"
 #include "mdss_fb.h"
 #include "mdss_mdp_cdm.h"
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+void mdss_dsi_status_check_ctl(struct msm_fb_data_type *mfd, int sheduled);
+#endif
+#endif
 
 #define MDSS_MDP_DEFAULT_INTR_MASK 0
 
@@ -1131,21 +1136,12 @@ static inline int mdss_mdp_get_wb_ctl_support(struct mdss_data_type *mdata,
 							bool rotator_session)
 {
 	/*
-	 * Any control path can be routed to any of the hardware datapaths.
-	 * But there is a HW restriction for 3D Mux block. As the 3D Mux
-	 * settings in the CTL registers are double buffered, if an interface
-	 * uses it and disconnects, then the subsequent interface which gets
-	 * connected should use the same control path in order to clear the
-	 * 3D MUX settings.
-	 * To handle this restriction, we are allowing WB also, to loop through
-	 * all the avialable control paths, so that it can reuse the control
-	 * path left by the external interface, thereby clearing the 3D Mux
-	 * settings.
-	 * The initial control paths can be used by Primary, External and WB.
-	 * The rotator can use the remaining available control paths.
+	 * Initial control paths are used for primary and external
+	 * interfaces and remaining control paths are used for WB
+	 * interfaces.
 	 */
 	return rotator_session ? (mdata->nctl - mdata->nmixers_wb) :
-		MDSS_MDP_CTL0;
+				(mdata->nctl - mdata->nwb);
 }
 
 static inline bool mdss_mdp_is_nrt_vbif_client(struct mdss_data_type *mdata,

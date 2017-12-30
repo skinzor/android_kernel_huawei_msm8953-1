@@ -26,12 +26,41 @@
 #include "mdss_dsi.h"
 #include "mdss_dba_utils.h"
 
+#ifdef CONFIG_LCDKIT_DRIVER
+#include "lcdkit_dsi_panel.h"
+#else
+#ifdef CONFIG_LOG_JANK
+#include <huawei_platform/log/log_jank.h>
+#endif
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+#include <linux/hw_lcd_common.h>
+#include <huawei_platform/touchscreen/hw_tp_common.h>
+#include <hw_lcd_debug.h>
+#include <misc/app_info.h>
+int lcd_debug_mask = LCD_INFO;
+module_param_named(lcd_debug_mask, lcd_debug_mask, int, S_IRUGO | S_IWUSR | S_IWGRP);
+static bool enable_initcode_debugging = FALSE;
+module_param_named(enable_initcode_debugging, enable_initcode_debugging, bool, S_IRUGO | S_IWUSR);
+static bool global_tp_pre_lcd_flag = false;
+#endif
+#endif
 #define DT_CMD_HDR 6
 #define MIN_REFRESH_RATE 48
 #define DEFAULT_MDP_TRANSFER_TIME 14000
 
 #define VSYNC_DELAY msecs_to_jiffies(17)
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+const char *default_panel_name;
 
+#define MAX_RETURN_COUNT_DSM 4
+#define REPEAT_COUNT_DSM 3
+#define REG_0A_INDEX 1
+#define DSM_REG_BUF 256
+
+
+#endif
+#endif
 DEFINE_LED_TRIGGER(bl_led_trigger);
 
 void mdss_dsi_panel_pwm_cfg(struct mdss_dsi_ctrl_pdata *ctrl)
@@ -126,17 +155,38 @@ static void mdss_dsi_panel_bklt_pwm(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 	}
 }
 
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifndef CONFIG_HUAWEI_KERNEL_LCD
 static char dcs_cmd[2] = {0x54, 0x00}; /* DTYPE_DCS_READ */
 static struct dsi_cmd_desc dcs_read_cmd = {
 	{DTYPE_DCS_READ, 1, 0, 1, 5, sizeof(dcs_cmd)},
 	dcs_cmd
 };
+#endif
+#else
+static char dcs_cmd[2] = {0x54, 0x00}; /* DTYPE_DCS_READ */
+static struct dsi_cmd_desc dcs_read_cmd = {
+	{DTYPE_DCS_READ, 1, 0, 1, 5, sizeof(dcs_cmd)},
+	dcs_cmd
+};
+#endif
 
 int mdss_dsi_panel_cmd_read(struct mdss_dsi_ctrl_pdata *ctrl, char cmd0,
 		char cmd1, void (*fxn)(int), char *rbuf, int len)
 {
 	struct dcs_cmd_req cmdreq;
 	struct mdss_panel_info *pinfo;
+
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	struct dsi_panel_cmds *pcmds;
+	char dcs_cmd[2] = {0x54, 0x00}; /* DTYPE_DCS_READ */
+	struct dsi_cmd_desc dcs_read_cmd = {
+		{DTYPE_DCS_READ, 1, 0, 1, 5, sizeof(dcs_cmd)},
+		dcs_cmd
+	};
+#endif
+#endif
 
 	pinfo = &(ctrl->panel_data.panel_info);
 	if (pinfo->dcs_cmd_by_left) {
@@ -156,6 +206,16 @@ int mdss_dsi_panel_cmd_read(struct mdss_dsi_ctrl_pdata *ctrl, char cmd0,
 	/*
 	 * blocked here, until call back called
 	 */
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	if(ctrl->esd_check_enable)
+	{
+		pcmds = &ctrl->esd_cmds;
+		if (pcmds->link_state == DSI_HS_MODE)
+			cmdreq.flags  |= CMD_REQ_HS_MODE;
+	}
+#endif
+#endif
 
 	return mdss_dsi_cmdlist_put(ctrl, &cmdreq);
 }
@@ -189,6 +249,7 @@ static void mdss_dsi_panel_cmds_send(struct mdss_dsi_ctrl_pdata *ctrl,
 	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
 }
 
+#ifndef CONFIG_LCDKIT_DRIVER
 static char led_pwm1[2] = {0x51, 0x0};	/* DTYPE_DCS_WRITE1 */
 static struct dsi_cmd_desc backlight_cmd = {
 	{DTYPE_DCS_WRITE1, 1, 0, 0, 1, sizeof(led_pwm1)},
@@ -219,6 +280,7 @@ static void mdss_dsi_panel_bklt_dcs(struct mdss_dsi_ctrl_pdata *ctrl, int level)
 
 	mdss_dsi_cmdlist_put(ctrl, &cmdreq);
 }
+#endif
 
 static int mdss_dsi_request_gpios(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
@@ -256,8 +318,23 @@ static int mdss_dsi_request_gpios(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 			goto mode_gpio_err;
 		}
 	}
+	#ifdef CONFIG_LCDKIT_DRIVER
+	if (gpio_is_valid(ctrl_pdata->disp_bl_gpio)) {
+		rc = gpio_request(ctrl_pdata->disp_bl_gpio,
+						"bl_enable");
+		if (rc) {
+			pr_err("request bl gpio failed, rc=%d\n",
+				       rc);
+			goto bl_en_gpio_err;
+		}
+	}
+	#endif
 	return rc;
-
+#ifdef CONFIG_LCDKIT_DRIVER
+bl_en_gpio_err:
+	if (gpio_is_valid(ctrl_pdata->mode_gpio))
+		gpio_free(ctrl_pdata->mode_gpio);
+#endif
 mode_gpio_err:
 	if (gpio_is_valid(ctrl_pdata->bklt_en_gpio))
 		gpio_free(ctrl_pdata->bklt_en_gpio);
@@ -270,11 +347,17 @@ disp_en_gpio_err:
 	return rc;
 }
 
+#ifndef CONFIG_LCDKIT_DRIVER
 int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 {
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
 	struct mdss_panel_info *pinfo = NULL;
 	int i, rc = 0;
+
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	unsigned long timeout = jiffies;
+	static bool is_first_reset = true;
+#endif
 
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
@@ -307,11 +390,20 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 	pr_debug("%s: enable = %d\n", __func__, enable);
 
 	if (enable) {
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+		if(is_first_reset ){
+#endif
 		rc = mdss_dsi_request_gpios(ctrl_pdata);
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+		is_first_reset = false;
+#endif
 		if (rc) {
 			pr_err("gpio request failed\n");
 			return rc;
 		}
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	}
+#endif
 		if (!pinfo->cont_splash_enabled) {
 			if (gpio_is_valid(ctrl_pdata->disp_en_gpio)) {
 				rc = gpio_direction_output(
@@ -373,6 +465,9 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 			pr_debug("%s: Reset panel done\n", __func__);
 		}
 	} else {
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+		is_first_reset = true;
+#endif
 		if (gpio_is_valid(ctrl_pdata->bklt_en_gpio)) {
 			gpio_set_value((ctrl_pdata->bklt_en_gpio), 0);
 			gpio_free(ctrl_pdata->bklt_en_gpio);
@@ -381,16 +476,28 @@ int mdss_dsi_panel_reset(struct mdss_panel_data *pdata, int enable)
 			gpio_set_value((ctrl_pdata->disp_en_gpio), 0);
 			gpio_free(ctrl_pdata->disp_en_gpio);
 		}
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+		if(!pinfo->panel_down_reset){
+#endif
 		gpio_set_value((ctrl_pdata->rst_gpio), 0);
+		msleep(20);
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+		LCD_LOG_INFO("when lcd sleep reset keep low\n");
+		}
+#endif
 		gpio_free(ctrl_pdata->rst_gpio);
 		if (gpio_is_valid(ctrl_pdata->mode_gpio))
 			gpio_free(ctrl_pdata->mode_gpio);
 	}
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	LCD_LOG_INFO("%s: panel reset time = %u\n",
+			__func__,jiffies_to_msecs(jiffies-timeout));
+#endif
 
 exit:
 	return rc;
 }
-
+#endif
 /**
  * mdss_dsi_roi_merge() -  merge two roi into single roi
  *
@@ -641,11 +748,32 @@ static void mdss_dsi_panel_switch_mode(struct mdss_panel_data *pdata,
 		mdss_dsi_panel_dsc_pps_send(ctrl_pdata, &pdata->panel_info);
 }
 
+
+static char led_pwm_pad[2] = {0x9f, 0x0};
+static char chang_page0_index0[2] = {0x83, 0x0};
+static char chang_page0_index1[2] = {0x84, 0x0};
+
+static struct dsi_cmd_desc backlight_cmd_pad[] = {
+	{{DTYPE_DCS_WRITE1, 0, 0, 0, 1, sizeof(chang_page0_index0)},chang_page0_index0},
+	{{DTYPE_DCS_WRITE1, 0, 0, 0, 1, sizeof(chang_page0_index1)},chang_page0_index1},
+	{{DTYPE_DCS_WRITE1, 1, 0, 0, 1, sizeof(led_pwm_pad)},led_pwm_pad},
+};
+
+extern ssize_t Is_lm36923_used(void);
+extern ssize_t lm36923_chip_initial(void);
 static void mdss_dsi_panel_bl_ctrl(struct mdss_panel_data *pdata,
 							u32 bl_level)
 {
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
 	struct mdss_dsi_ctrl_pdata *sctrl = NULL;
+	static u32 pre_bl_level=0;
+
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	static bool is_first_on = true;
+	static bool lcd_log_flag = true;
+#endif
+#endif
 
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
@@ -654,6 +782,13 @@ static void mdss_dsi_panel_bl_ctrl(struct mdss_panel_data *pdata,
 
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
+
+	if(0==pre_bl_level && 0!=bl_level){
+		mdelay(20);
+		if(Is_lm36923_used())
+			lm36923_chip_initial();
+	}
+	pre_bl_level = bl_level;
 
 	/*
 	 * Some backlight controllers specify a minimum duty cycle
@@ -664,9 +799,46 @@ static void mdss_dsi_panel_bl_ctrl(struct mdss_panel_data *pdata,
 	if ((bl_level < pdata->panel_info.bl_min) && (bl_level != 0))
 		bl_level = pdata->panel_info.bl_min;
 
+    #ifdef CONFIG_LCDKIT_DRIVER
+    lcdkit_record_bl_level(bl_level);
+    lcdkit_delay(lcdkit_info.panel_infos.delay_bf_bl);
+    #endif
+
 	switch (ctrl_pdata->bklt_ctrl) {
 	case BL_WLED:
 		led_trigger_event(bl_led_trigger, bl_level);
+
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+		LCD_LOG_DBG("%s:LCD backlight is: %d \n",__func__,bl_level);
+		if (lcd_log_flag || (bl_level == 0)) {
+#ifdef CONFIG_LOG_JANK
+        if (lcd_log_flag && bl_level){
+                LOG_JANK_D(JLID_KERNEL_LCD_BACKLIGHT_ON,"%s,%d", "JL_KERNEL_LCD_BACKLIGHT_ON",bl_level);
+#ifdef CONFIG_HUAWEI_DSM
+                lcd_pwr_status.lcd_dcm_pwr_status |= BIT(3);
+                do_gettimeofday(&lcd_pwr_status.tvl_backlight);
+                time_to_tm(lcd_pwr_status.tvl_backlight.tv_sec, 0, &lcd_pwr_status.tm_backlight);
+#endif
+        }
+#endif
+			LCD_LOG_INFO("%s:LCD backlight is: %d \n",__func__,bl_level);
+			if (bl_level == 0)
+				lcd_log_flag = true;
+			else {
+				lcd_log_flag = false;
+				if(is_first_on) {
+					is_first_on = false;
+				} else {
+					if(ctrl_pdata->dsm_check_enable) {
+						mdss_dsi_check_panel_status_n(pdata);
+					}
+				}
+			}
+		}
+#endif
+#endif
+
 		break;
 	case BL_PWM:
 		mdss_dsi_panel_bklt_pwm(ctrl_pdata, bl_level);
@@ -674,7 +846,6 @@ static void mdss_dsi_panel_bl_ctrl(struct mdss_panel_data *pdata,
 	case BL_DCS_CMD:
 		if (!mdss_dsi_sync_wait_enable(ctrl_pdata)) {
 			mdss_dsi_panel_bklt_dcs(ctrl_pdata, bl_level);
-			break;
 		}
 		/*
 		 * DCS commands to update backlight are usually sent at
@@ -686,15 +857,22 @@ static void mdss_dsi_panel_bl_ctrl(struct mdss_panel_data *pdata,
 		 */
 		sctrl = mdss_dsi_get_other_ctrl(ctrl_pdata);
 		if (mdss_dsi_sync_wait_trigger(ctrl_pdata)) {
-			if (sctrl)
+			if (sctrl){
 				mdss_dsi_panel_bklt_dcs(sctrl, bl_level);
+			}
 			mdss_dsi_panel_bklt_dcs(ctrl_pdata, bl_level);
 		} else {
 			mdss_dsi_panel_bklt_dcs(ctrl_pdata, bl_level);
-			if (sctrl)
+			if (sctrl){
 				mdss_dsi_panel_bklt_dcs(sctrl, bl_level);
+			}
 		}
 		break;
+	#ifdef CONFIG_LCDKIT_DRIVER
+	case BL_IC_TI:
+		//lcdkit_mdss_dsi_panel_bklt_IC_TI(ctrl_pdata, bl_level);
+		break;
+	#endif
 	default:
 		pr_err("%s: Unknown bl_ctrl configuration\n",
 			__func__);
@@ -702,13 +880,17 @@ static void mdss_dsi_panel_bl_ctrl(struct mdss_panel_data *pdata,
 	}
 }
 
+#ifndef CONFIG_LCDKIT_DRIVER
 static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 {
 	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
 	struct mdss_panel_info *pinfo;
 	struct dsi_panel_cmds *on_cmds;
 	int ret = 0;
-
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	struct dsi_panel_cmds cmds;
+	unsigned long timeout = jiffies;
+#endif
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
 		return -EINVAL;
@@ -733,10 +915,32 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 
 	pr_debug("%s: ndx=%d cmd_cnt=%d\n", __func__,
 				ctrl->ndx, on_cmds->cmd_cnt);
-
+#ifndef CONFIG_HUAWEI_KERNEL_LCD
 	if (on_cmds->cmd_cnt)
 		mdss_dsi_panel_cmds_send(ctrl, on_cmds, CMD_REQ_COMMIT);
+#else
+	memset(&cmds, 0, sizeof(cmds));
+	if (enable_initcode_debugging && !hw_parse_dsi_cmds(&cmds))
+	{
+		LCD_LOG_INFO("read from debug file and write to LCD!\n");
+		cmds.link_state = on_cmds->link_state;
+		if (cmds.cmd_cnt)
+			mdss_dsi_panel_cmds_send(ctrl, &cmds,CMD_REQ_COMMIT);
+		hw_free_dsi_cmds(&cmds);
+	}
+	else
+	{
+		if (on_cmds->cmd_cnt)
+			mdss_dsi_panel_cmds_send(ctrl, on_cmds,CMD_REQ_COMMIT);
+	}
 
+#ifdef CONFIG_HUAWEI_DSM
+	lcd_pwr_status.lcd_dcm_pwr_status |= BIT(1);
+	do_gettimeofday(&lcd_pwr_status.tvl_lcd_on);
+	time_to_tm(lcd_pwr_status.tvl_lcd_on.tv_sec, 0, &lcd_pwr_status.tm_lcd_on);
+#endif
+
+#endif
 	if (pinfo->compression_mode == COMPRESSION_DSC)
 		mdss_dsi_panel_dsc_pps_send(ctrl, pinfo);
 
@@ -744,8 +948,16 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 		mdss_dba_utils_video_on(pinfo->dba_data, pinfo);
 end:
 	pr_debug("%s:-\n", __func__);
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	LCD_LOG_INFO("exit %s: panel_on_time = %u\n",
+			__func__,jiffies_to_msecs(jiffies-timeout));
+#ifdef CONFIG_LOG_JANK
+	LOG_JANK_D(JLID_KERNEL_LCD_POWER_ON, "%s", "JL_KERNEL_LCD_POWER_ON");
+#endif
+#endif
 	return ret;
 }
+#endif
 
 static int mdss_dsi_post_panel_on(struct mdss_panel_data *pdata)
 {
@@ -786,6 +998,7 @@ end:
 	return 0;
 }
 
+#ifndef CONFIG_LCDKIT_DRIVER
 static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
 {
 	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
@@ -814,11 +1027,295 @@ static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
 		mdss_dba_utils_video_off(pinfo->dba_data);
 		mdss_dba_utils_hdcp_enable(pinfo->dba_data, false);
 	}
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	 LCD_LOG_INFO("exit %s\n",__func__);
+#endif
 
+#ifdef CONFIG_LOG_JANK
+	LOG_JANK_D(JLID_KERNEL_LCD_POWER_OFF, "%s", "JL_KERNEL_LCD_POWER_OFF");
+#endif
 end:
 	pr_debug("%s:-\n", __func__);
 	return 0;
 }
+
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+static int mdss_dsi_panel_inversion_ctrl(struct mdss_panel_data *pdata,u32 imode)
+{
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+	int ret = 0;
+	if (pdata == NULL) {
+		LCD_LOG_ERR("%s: Invalid input data\n", __func__);
+		return -EINVAL;
+	}
+	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
+				panel_data);
+
+	switch(imode)
+	{
+		case COLUMN_INVERSION: //column inversion mode
+			if (ctrl_pdata->column_inversion_cmds.cmd_cnt)
+				mdss_dsi_panel_cmds_send(ctrl_pdata ,&ctrl_pdata->column_inversion_cmds,CMD_REQ_COMMIT);
+			LCD_LOG_INFO("exit %s ,column inversion enable= %d \n",__func__,imode);
+			break;
+		case DOT_INVERSION:// dot inversion mode
+			if (ctrl_pdata->dot_inversion_cmds.cmd_cnt)
+				mdss_dsi_panel_cmds_send(ctrl_pdata ,&ctrl_pdata->dot_inversion_cmds,CMD_REQ_COMMIT);
+			LCD_LOG_INFO("exit %s ,dot inversion enable= %d \n",__func__,imode);
+			break;
+		default:
+			ret = -EINVAL;
+			LCD_LOG_ERR("%s: invalid inversion mode: %d\n", __func__, imode);
+			break;
+	}
+
+	return ret;
+}
+
+static int mdss_dsi_check_panel_status(struct mdss_panel_data *pdata)
+{
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+	int ret = 0;
+	int count = 5;
+	char rdata[3] = {0};
+	char expect_value = 0x9C;
+	int read_length = 1;
+
+	if (pdata == NULL) {
+		LCD_LOG_ERR("%s: Invalid input data\n", __func__);
+		return -EINVAL;
+	}
+	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
+				panel_data);
+	if(ctrl_pdata->skip_reg_read)
+	{
+		LCD_LOG_INFO("exit %s ,skip_reg_read=%d, panel status is ok\n",__func__,ctrl_pdata->skip_reg_read);
+		return ret;
+	}
+	else
+	{
+		if (ctrl_pdata->long_read_flag)
+		{
+			expect_value = ctrl_pdata->reg_expect_value;
+			read_length = ctrl_pdata->reg_expect_count;
+		}
+
+		do{
+			mdss_dsi_panel_cmd_read(ctrl_pdata,0x0A,0x00,NULL,rdata,read_length);
+			LCD_LOG_INFO("exit %s ,0x0A = 0x%x \n",__func__,rdata[0]);
+			count--;
+		}while((expect_value != rdata[0])&&(count>0));
+
+		if(0 == count)
+		{
+			ret = -EINVAL;
+#ifdef CONFIG_HUAWEI_DSM
+			lcd_report_dsm_err(DSM_LCD_STATUS_ERROR_NO, rdata[0], 0x0A);
+#endif
+		}
+
+		return ret;
+	}
+}
+
+static int mdss_dsi_read_status_regs(struct mdss_dsi_ctrl_pdata *ctrl_pdata, int *reg0A_error_status, int *regDA_error_status)
+{
+	int compare_reg = 0;
+	int count = 0;
+	int ret = 0;
+	int read_length = 1;
+	int i = 0;
+	char dsm_buf[MAX_RETURN_COUNT_DSM] = {0};
+
+	if (ctrl_pdata == NULL) {
+		LCD_LOG_ERR("%s: Invalid input data\n", __func__);
+		return -EINVAL;
+	}
+	/*read reg: 0x0A*/
+	do {
+		compare_reg = 0;
+		/*reg from xml is : 05 0a 0b 0c 0d 0e 0f*/
+		mdss_dsi_panel_cmd_read(ctrl_pdata, 0x0A, 0x00, NULL, dsm_buf, ctrl_pdata->dsm_cmds.cmds[REG_0A_INDEX].dchdr.dlen - 1);
+		count++;
+		for(i=0;i<(ctrl_pdata->dsm_cmds.cmds[REG_0A_INDEX].dchdr.dlen-1);i++) {
+			if(dsm_buf[i] != ctrl_pdata->dsm_cmds.cmds[REG_0A_INDEX].payload[i+1]) {
+				compare_reg = -1;
+				LCD_LOG_ERR("%s, reg 0x0A %d byte should be 0x%02x, but read data =0x%02x\n",
+						__func__,i+1,ctrl_pdata->dsm_cmds.cmds[REG_0A_INDEX].payload[i+1],dsm_buf[i]);
+				/*clear dsm_buf data before the next read*/
+				dsm_buf[i] = 0xFF;
+				break;
+			}
+			dsm_buf[i] = 0xFF;
+		}
+	} while((count < REPEAT_COUNT_DSM)&&(compare_reg == -1));
+
+	if((count == REPEAT_COUNT_DSM) && (compare_reg == -1)) {
+		(*reg0A_error_status)++;
+	}
+
+	/*read reg: 0xDA*/
+	count = 0;
+	do {
+		compare_reg = 0;
+		mdss_dsi_panel_cmd_read(ctrl_pdata, 0xDA, 0x00, NULL, dsm_buf, read_length);
+		count++;
+		if(dsm_buf[0] <= 0) {
+			compare_reg = -1;
+			LCD_LOG_ERR("%s: read_reg 0xDA = 0x%x\n", __func__, dsm_buf[0]);
+		}
+		dsm_buf[0] = 0xFF;
+	} while((count < REPEAT_COUNT_DSM)&&(compare_reg == -1));
+
+	if((count == REPEAT_COUNT_DSM) && (compare_reg == -1)) {
+		(*regDA_error_status)++;
+	}
+
+	return ret;
+}
+
+static int mdss_dsi_report_dsm_error(struct mdss_dsi_ctrl_pdata *ctrl_pdata, int reg0A_error_status, int regDA_error_status)
+{
+	int ret = 0;
+	int read_length = 1;
+	int i = 0, j = 0;
+	char dsm_buf[MAX_RETURN_COUNT_DSM]={0};
+	char dsm_reg_buf[DSM_REG_BUF] = {0};
+	char dsm_reg_str[DSM_REG_BUF] = {0};
+
+	if (ctrl_pdata == NULL) {
+		LCD_LOG_ERR("%s: Invalid input data\n", __func__);
+		return -EINVAL;
+	}
+
+	for(j=0;j<ctrl_pdata->dsm_cmds.cmd_cnt;j++) {
+		/*when read 0A or DA reg error report reg & reg_value : 05 0a 0b 0c 0d 0e 0f*/
+		mdss_dsi_panel_cmd_read(ctrl_pdata, ctrl_pdata->dsm_cmds.cmds[j].payload[0], 0x00, NULL, dsm_buf, ctrl_pdata->dsm_cmds.cmds[j].dchdr.dlen - 1);
+		for(i=0;i<(ctrl_pdata->dsm_cmds.cmds[j].dchdr.dlen-1);i++) {
+			LCD_LOG_ERR("%s, reg 0x%02X %d byte should be 0x%02x, and read data =0x%02x\n",
+						__func__,ctrl_pdata->dsm_cmds.cmds[j].payload[0],i+1,ctrl_pdata->dsm_cmds.cmds[j].payload[i+1],dsm_buf[i]);
+			if(i < (ctrl_pdata->dsm_cmds.cmds[j].dchdr.dlen-2)) {
+				snprintf(dsm_reg_buf, sizeof(dsm_reg_buf), "%s%02X ", dsm_reg_buf, dsm_buf[i]);
+			} else {
+				snprintf(dsm_reg_buf, sizeof(dsm_reg_buf), "%s%02X", dsm_reg_buf, dsm_buf[i]);
+			}
+			/*clear dsm_buf data before the next read*/
+			dsm_buf[i] = 0xFF;
+		}
+		snprintf(dsm_reg_buf, sizeof(dsm_reg_buf), "%s,", dsm_reg_buf);
+	}
+	mdss_dsi_panel_cmd_read(ctrl_pdata, 0xDA, 0x00, NULL, dsm_buf, read_length);
+	snprintf(dsm_reg_buf, sizeof(dsm_reg_buf), "%s%02X", dsm_reg_buf, dsm_buf[0]);
+
+	if((reg0A_error_status == 1) && (regDA_error_status == 0)) {
+		snprintf(dsm_reg_str, sizeof(dsm_reg_str), "Read reg 0A error, dump all regs: 05,0A,0B,0C,0D,0E,0F,DA");
+	} else if((reg0A_error_status == 0) && (regDA_error_status == 1)) {
+		snprintf(dsm_reg_str, sizeof(dsm_reg_str), "Read reg DA error, dump all regs: 05,0A,0B,0C,0D,0E,0F,DA");
+	} else if((reg0A_error_status == 1) && (regDA_error_status == 1)) {
+		snprintf(dsm_reg_str, sizeof(dsm_reg_str), "Read reg 0A/DA error, dump all regs: 05,0A,0B,0C,0D,0E,0F,DA");
+	} else {
+		return -EINVAL;
+	}
+#ifdef CONFIG_HUAWEI_DSM
+	lcd_report_dsm_status_err(DSM_LCD_STATUS_ERROR_NO, dsm_reg_buf, dsm_reg_str);
+#endif
+
+	return ret;
+}
+
+int mdss_dsi_check_panel_status_n(struct mdss_panel_data *pdata)
+{
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
+	int ret = 0;
+	int reg0A_error_status = 0;
+	int regDA_error_status = 0;
+
+	if (pdata == NULL) {
+		LCD_LOG_ERR("%s: Invalid input data\n", __func__);
+		return -EINVAL;
+	}
+	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
+				panel_data);
+
+	mdss_dsi_clk_ctrl(ctrl_pdata, ctrl_pdata->dsi_clk_handle,
+			  MDSS_DSI_ALL_CLKS, MDSS_DSI_CLK_ON);
+
+	mdss_dsi_read_status_regs(ctrl_pdata, &reg0A_error_status, &regDA_error_status);
+	if((reg0A_error_status == 1) || (regDA_error_status == 1)) {
+		mdss_dsi_report_dsm_error(ctrl_pdata, reg0A_error_status, regDA_error_status);
+	}
+
+	mdss_dsi_clk_ctrl(ctrl_pdata, ctrl_pdata->dsi_clk_handle,
+				  MDSS_DSI_ALL_CLKS, MDSS_DSI_CLK_OFF);
+
+	return ret;
+}
+#endif
+/*if Panel IC works well, return 1, else return -1 */
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+int panel_check_live_status(struct mdss_dsi_ctrl_pdata *ctrl)
+{
+	int count = 0;
+	int j = 0;
+	int i = 0;
+	/* success on retrun 1,otherwise return 0 or -1 */
+	int ret = 1;
+	int compare_reg = 0;
+
+	#define MAX_RETURN_COUNT_ESD 4
+	#define REPEAT_COUNT 5
+	char esd_buf[MAX_RETURN_COUNT_ESD]={0};
+	if(mutex_lock_interruptible(&ctrl->panel_data.LCD_checksum_lock))
+	{
+		pr_err("exit %s,esd get lock fail\n",__func__);
+		return ret;
+	}
+
+	for(j = 0;j < ctrl->esd_cmds.cmd_cnt;j++)
+	{
+		count = 0;
+		do
+		{
+			compare_reg = 0;
+			mdss_dsi_panel_cmd_read(ctrl,ctrl->esd_cmds.cmds[j].payload[0],0x00,NULL,esd_buf,ctrl->esd_cmds.cmds[j].dchdr.dlen - 1);
+			count++;
+			for(i=0;i<(ctrl->esd_cmds.cmds[j].dchdr.dlen-1);i++)
+			{
+				if(esd_buf[i] != ctrl->esd_cmds.cmds[j].payload[i+1])
+				{
+					set_fts_tp_esd_flag_normal();
+					compare_reg = -1;
+					LCD_LOG_ERR("panel ic error: in %s,  reg 0x%02X %d byte should be 0x%02x, but read data =0x%02x \n",
+						__func__,ctrl->esd_cmds.cmds[j].payload[0],i+1,ctrl->esd_cmds.cmds[j].payload[i+1],esd_buf[i]);
+					/*clear esd_buf data before the next read*/
+					esd_buf[i] = 0xFF;
+					break;
+				}
+				/*clear esd_buf data before the next read*/
+				esd_buf[i] = 0xFF;
+			}
+		}while((count<REPEAT_COUNT)&&(compare_reg == -1));
+
+		if((count == REPEAT_COUNT) && (compare_reg == -1))
+		{
+			ret = -1;
+			goto out;
+		}
+	}
+
+	if (is_fts_tp_esd_error())
+	{
+		// current only apply for ftc_8716 tp
+		LCD_LOG_ERR("%s:fts_tp_esd error, g_Fts_Tp_To_Lcd_Rst_Flag[%u]\n", __func__, get_fts_tp_to_lcd_reset_flag());
+		set_fts_tp_esd_flag_normal();
+		ret = -1;
+	}
+out:
+	mutex_unlock(&ctrl->panel_data.LCD_checksum_lock);
+	return ret;
+}
+#endif
+#endif
 
 static int mdss_dsi_panel_low_power_config(struct mdss_panel_data *pdata,
 	int enable)
@@ -1413,7 +1910,7 @@ static void mdss_panel_parse_te_params(struct device_node *np,
 	te->wr_ptr_irq = 0;
 }
 
-
+#ifndef CONFIG_LCDKIT_DRIVER
 static int mdss_dsi_parse_reset_seq(struct device_node *np,
 		u32 rst_seq[MDSS_DSI_RST_SEQ_LEN], u32 *rst_len,
 		const char *name)
@@ -1511,6 +2008,7 @@ static int mdss_dsi_nt35596_read_status(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 		return 1;
 	}
 }
+#endif
 
 static void mdss_dsi_parse_roi_alignment(struct device_node *np,
 		struct dsi_panel_timing *pt)
@@ -1609,6 +2107,7 @@ exit:
 	return;
 }
 
+#ifndef CONFIG_LCDKIT_DRIVER
 /* the length of all the valid values to be checked should not be great
  * than the length of returned data from read command.
  */
@@ -1772,6 +2271,7 @@ error1:
 error:
 	pinfo->esd_check_enabled = false;
 }
+#endif
 
 static int mdss_dsi_parse_panel_features(struct device_node *np,
 	struct mdss_dsi_ctrl_pdata *ctrl)
@@ -1975,6 +2475,181 @@ static void mdss_dsi_parse_dfps_config(struct device_node *pan_node,
 	return;
 }
 
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+static void mdss_panel_parse_esd_dt(struct device_node *np,
+			struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+{
+	int rc;
+	ctrl_pdata->status_mode = ESD_MAX;
+	ctrl_pdata->esd_check_enable = of_property_read_bool(np, "qcom,panel-esd-check-enabled");
+	if(ctrl_pdata->esd_check_enable)
+	{
+		rc = mdss_dsi_parse_dcs_cmds(np, &ctrl_pdata->esd_cmds,	"qcom,panel-esd-read-commands","qcom,esd-read-cmds-state");
+		if(rc < 0)
+		{
+			pr_err("%s:%d, parse esd command fail,esd check disabled\n", __func__, __LINE__);
+			ctrl_pdata->esd_check_enable = false;
+		}
+		else
+		{
+			pr_info("%s:, esd check enabled \n", __func__);
+		}
+	}
+	else
+	{
+		pr_info("%s:, esd check not enabled \n", __func__);
+	}
+}
+
+static void mdss_panel_parse_dsm_dt(struct device_node *np,
+			struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+{
+	int rc;
+	ctrl_pdata->dsm_check_enable = of_property_read_bool(np, "qcom,panel-dsm-check-enabled");
+	if(ctrl_pdata->dsm_check_enable)
+	{
+		rc = mdss_dsi_parse_dcs_cmds(np, &ctrl_pdata->dsm_cmds,	"qcom,panel-dsm-read-commands", "qcom,dsm-read-cmds-state");
+		if(rc < 0)
+		{
+			pr_err("%s:%d, parse dsm command fail, dsm check disabled\n", __func__, __LINE__);
+			ctrl_pdata->dsm_check_enable = false;
+		}
+		else
+		{
+			pr_info("%s:, dsm check enabled \n", __func__);
+		}
+	}
+	else
+	{
+		pr_info("%s:, dsm check not enabled \n", __func__);
+	}
+}
+
+static int mdss_lcd_frame_checksum(struct mdss_panel_data *pdata)
+{
+	int i = 0, offset = 0, ret = 0;
+	char rdata = 0;
+	int read_length = 1;
+	struct mdss_dsi_ctrl_pdata *ctrl = NULL;
+
+	ctrl = container_of(pdata, struct mdss_dsi_ctrl_pdata,
+				panel_data);
+	if(!ctrl->frame_checksum_support){
+		LCD_LOG_INFO("%s:this panel frame checksum not supported!\n",__func__);
+		return ret;
+	}
+
+	if(mutex_lock_interruptible(&pdata->LCD_checksum_lock))
+	{
+		pr_err("exit %s,checksum get lock fail\n",__func__);
+		return ret;
+	}
+
+	if (ctrl->dsi_frame_crc_enable_cmds.cmd_cnt){
+		mdss_dsi_panel_cmds_send(ctrl, &ctrl->dsi_frame_crc_enable_cmds,CMD_REQ_COMMIT);
+	}
+
+	mdelay(50);
+
+	do{
+		mdss_dsi_panel_cmd_read(ctrl,ctrl->frame_crc_read_cmds[i],0x00,NULL,&rdata,read_length);
+		if(i == 0 && rdata != ctrl->frame_crc_read_cmds_value[offset+i]){
+			offset += ctrl->panel_checksum_cmd_len;
+			if(rdata != ctrl->frame_crc_read_cmds_value[offset+i])
+			{
+				offset += ctrl->panel_checksum_cmd_len;
+				if(rdata != ctrl->frame_crc_read_cmds_value[offset+i])
+				{
+					ret = -1;
+					LCD_LOG_ERR("%s:frame checksum fail! The %dth rdata = [0x%x]\n",__func__,i,rdata);
+					break;
+				}
+			}
+		}
+		else
+		{
+			if(rdata != ctrl->frame_crc_read_cmds_value[offset+i])
+			{
+				ret = -1;
+				LCD_LOG_ERR("%s:frame checksum fail! The %dth rdata = [0x%x]\n",__func__,i,rdata);
+				break;
+			}
+		}
+		i++;
+	}while(i < ctrl->panel_checksum_cmd_len);
+
+	if (ctrl->dsi_frame_crc_disable_cmds.cmd_cnt){
+			mdss_dsi_panel_cmds_send(ctrl, &ctrl->dsi_frame_crc_disable_cmds,CMD_REQ_COMMIT);
+	}
+	mutex_unlock(&pdata->LCD_checksum_lock);
+	return ret;
+}
+
+static void mdss_panel_parse_frame_checksum_dt(struct device_node *np,
+			struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+{
+	int rc = 0, i = 0, len = 0;
+	const char *data;
+
+	ctrl_pdata->frame_checksum_support = of_property_read_bool(np, "qcom,panel-frame-checksum-support");
+	LCD_LOG_INFO("%s: frame checksum %s by this panel!\n",__func__,
+					ctrl_pdata->frame_checksum_support?"supported":"not supported");
+
+	if(ctrl_pdata->frame_checksum_support)
+	{
+		rc = mdss_dsi_parse_dcs_cmds(np, &ctrl_pdata->dsi_frame_crc_enable_cmds,
+			"qcom,panel-frame_crc_enable_cmds","qcom,frame_crc_enable-cmds-state");
+		if(rc < 0)
+		{
+			LCD_LOG_ERR("%s: parse frame_crc_enable command fail!\n",
+					__func__);
+		}
+
+		rc = mdss_dsi_parse_dcs_cmds(np, &ctrl_pdata->dsi_frame_crc_disable_cmds,
+			"qcom,panel-frame_crc_disable_cmds","qcom,frame_crc_disable-cmds-state");
+		if(rc < 0)
+		{
+			LCD_LOG_ERR("%s: parse frame_crc_disable command fail!\n",
+					__func__);
+		}
+
+		data = of_get_property(np, "qcom,panel-frame_crc_read_cmds", &len);
+		if ((!data) || (!len)) {
+			LCD_LOG_ERR("%s: parse frame_crc_read command fail, frame_checksum not supported!\n",
+						__func__);
+			goto exit;
+		}
+		else
+		{
+			ctrl_pdata->panel_checksum_cmd_len = len;
+			for (i = 0; i < len; i++){
+				ctrl_pdata->frame_crc_read_cmds[i] = data[i];
+			}
+		}
+
+		data = of_get_property(np, "qcom,panel-frame_crc_read_cmds_value", &len);
+		if ((!data) || (!len)) {
+			LCD_LOG_ERR("%s: parse frame_crc_read command value fail, frame_checksum not supported!\n",
+				__func__);
+			goto exit;
+		}
+		else{
+			for (i = 0; i < len; i++){
+				ctrl_pdata->frame_crc_read_cmds_value[i] = data[i];
+			}
+		}
+
+	}
+
+	return;
+	exit:
+		ctrl_pdata->frame_checksum_support = false;
+		LCD_LOG_ERR("%s : parse frame_crc dts cmds unsuccess! disable checksum!\n",__func__);
+	return;
+}
+#endif
+
 int mdss_panel_parse_bl_settings(struct device_node *np,
 			struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
@@ -2035,6 +2710,7 @@ int mdss_panel_parse_bl_settings(struct device_node *np,
 	}
 	return 0;
 }
+#endif
 
 int mdss_dsi_panel_timing_switch(struct mdss_dsi_ctrl_pdata *ctrl,
 			struct mdss_panel_timing *timing)
@@ -2084,6 +2760,7 @@ void mdss_dsi_unregister_bl_settings(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 		led_trigger_unregister_simple(bl_led_trigger);
 }
 
+#ifndef CONFIG_LCDKIT_DRIVER
 static int mdss_dsi_panel_timing_from_dt(struct device_node *np,
 		struct dsi_panel_timing *pt,
 		struct mdss_panel_data *panel_data)
@@ -2159,6 +2836,7 @@ static int mdss_dsi_panel_timing_from_dt(struct device_node *np,
 			"qcom,mdss-dsi-panel-clockrate", (u32 *)&tmp64);
 	}
 	pt->timing.clk_rate = !rc ? tmp64 : 0;
+#ifndef CONFIG_HUAWEI_KERNEL_LCD
 
 	data = of_get_property(np, "qcom,mdss-dsi-panel-timings", &len);
 	if ((!data) || (len != 12)) {
@@ -2179,6 +2857,28 @@ static int mdss_dsi_panel_timing_from_dt(struct device_node *np,
 			pt->phy_timing_8996[i] = data[i];
 		phy_timings_present = true;
 	}
+#else
+	data = of_get_property(np, "qcom,mdss-dsi-panel-timings", &len);
+	if (!data) {
+		LCD_LOG_ERR("%s:%d, Unable to read Phy timing settings",
+				__func__, __LINE__);
+	} else if (len == 12){
+		for (i = 0; i < len; i++)
+			pt->phy_timing[i] = data[i];
+		phy_timings_present = true;
+		LCD_LOG_INFO("%s: read Phy timing settings,phy_timing num = %d\n",
+				__func__,len);
+	}else if (len == 40){
+		for (i = 0; i < len; i++)
+			pt->phy_timing_8996[i] = data[i];
+		phy_timings_present = true;
+		LCD_LOG_INFO("%s: read 8996 Phy lane timing settings,phy_timing num = %d\n",
+				__func__,len);
+	}else{
+		LCD_LOG_ERR("%s:%d,  Read Phy timing settings is not Phy timing settings or 8996 Phy lane timing settings ",
+				__func__, __LINE__);
+	}
+#endif
 	if (!phy_timings_present) {
 		pr_err("%s: phy timing settings not present\n", __func__);
 		return -EINVAL;
@@ -2387,7 +3087,15 @@ static int mdss_panel_parse_dt(struct device_node *np,
 
 	pinfo->mipi.vsync_enable = of_property_read_bool(np,
 		"qcom,mdss-dsi-te-check-enable");
-
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	pinfo->panel_down_reset = of_property_read_bool(np,
+		"qcom,mdss-dsi-down-reset-enable");
+	pinfo->bta_timeout_check = of_property_read_bool(np,
+		"qcom,mdss-bta-timeout-check");
+	global_tp_pre_lcd_flag = of_property_read_bool(np,
+		"qcom,mdss-dsi-tp-pre-lcd-enable");
+	set_tp_pre_lcd_status(global_tp_pre_lcd_flag);
+#endif
 	if (pinfo->sim_panel_mode == SIM_SW_TE_MODE)
 		pinfo->mipi.hw_vsync_mode = false;
 	else
@@ -2523,6 +3231,28 @@ static int mdss_panel_parse_dt(struct device_node *np,
 	pinfo->is_dba_panel = of_property_read_bool(np,
 			"qcom,dba-panel");
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	mdss_dsi_parse_dcs_cmds(np, &ctrl_pdata->dot_inversion_cmds,
+		"qcom,panel-dot-inversion-mode-cmds", "qcom,dot-inversion-cmds-dsi-state");
+	mdss_dsi_parse_dcs_cmds(np, &ctrl_pdata->column_inversion_cmds,
+		"qcom,panel-column-inversion-mode-cmds", "qcom,column-inversion-cmds-dsi-state");
+	rc = of_property_read_u32(np, "huawei,long-read-flag", &tmp);
+	ctrl_pdata->long_read_flag= (!rc ? tmp : 0);
+	rc = of_property_read_u32(np, "huawei,skip-reg-read-flag", &tmp);
+	ctrl_pdata->skip_reg_read= (!rc ? tmp : 0);
+	rc = of_property_read_u32(np, "huawei,reg-read-expect-value", &tmp);
+	ctrl_pdata->reg_expect_value = (!rc ? tmp : 0x1c);
+	rc = of_property_read_u32(np, "huawei,reg-long-read-count", &tmp);
+	ctrl_pdata->reg_expect_count = (!rc ? tmp : 3);
+	mdss_panel_parse_esd_dt(np,ctrl_pdata);
+	mdss_panel_parse_dsm_dt(np,ctrl_pdata);
+	mdss_panel_parse_frame_checksum_dt(np,ctrl_pdata);
+	#ifdef CONFIG_LCDKIT_DRIVER
+	rc = of_property_read_u32(np, "hw,lcdkit-bl-en-gpio",&tmp);
+	ctrl_pdata->disp_bl_gpio = (!rc ? tmp : -1);
+	#endif
+#endif
+
 	if (pinfo->is_dba_panel) {
 		bridge_chip_name = of_get_property(np,
 			"qcom,bridge-name", &len);
@@ -2549,7 +3279,9 @@ int mdss_dsi_panel_init(struct device_node *node,
 	int rc = 0;
 	static const char *panel_name;
 	struct mdss_panel_info *pinfo;
-
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	static const char *info_node = "lcd type";
+#endif
 	if (!node || !ctrl_pdata) {
 		pr_err("%s: Invalid arguments\n", __func__);
 		return -ENODEV;
@@ -2567,7 +3299,22 @@ int mdss_dsi_panel_init(struct device_node *node,
 		pr_info("%s: Panel Name = %s\n", __func__, panel_name);
 		strlcpy(&pinfo->panel_name[0], panel_name, MDSS_MAX_PANEL_LEN);
 	}
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	default_panel_name = panel_name;
+	if(!strcmp(default_panel_name,"truly 1080p video mode dsi panel"))
+	{
+		panel_name = "default lcd";
+		LCD_LOG_INFO("Do not support expect LCD module type, LCD name is %s\n",panel_name);
+	}
+	rc = app_info_set(info_node, panel_name);
+#endif
 	rc = mdss_panel_parse_dt(node, ctrl_pdata);
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	pinfo->lcdc.bl_level_max = pinfo->bl_max;
+	pinfo->lcdc.bl_level_min = pinfo->bl_min;
+	memset(pinfo->lcdc.lcdtype, 0, 20);
+	strncpy(pinfo->lcdc.lcdtype, "LCD", 20);
+#endif
 	if (rc) {
 		pr_err("%s:%d panel dt parse failed\n", __func__, __LINE__);
 		return rc;
@@ -2583,6 +3330,16 @@ int mdss_dsi_panel_init(struct device_node *node,
 	ctrl_pdata->low_power_config = mdss_dsi_panel_low_power_config;
 	ctrl_pdata->panel_data.set_backlight = mdss_dsi_panel_bl_ctrl;
 	ctrl_pdata->switch_mode = mdss_dsi_panel_switch_mode;
-
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	ctrl_pdata->panel_data.set_inversion_mode = mdss_dsi_panel_inversion_ctrl;
+	ctrl_pdata->panel_data.check_panel_status= mdss_dsi_check_panel_status;
+	ctrl_pdata->panel_data.panel_frame_checksum = mdss_lcd_frame_checksum;
+#endif
 	return 0;
 }
+#endif
+
+#ifdef CONFIG_LCDKIT_DRIVER
+#include "lcdkit_dsi_panel.c"
+#endif
+

@@ -60,5 +60,17 @@ mdss-qpic-objs := mdss_qpic.o mdss_fb.o mdss_qpic_panel.o
 obj-$(CONFIG_FB_MSM_QPIC) += mdss-qpic.o
 obj-$(CONFIG_FB_MSM_QPIC_ILI_QVGA_PANEL) += qpic_panel_ili_qvga.o
 
+ifeq ($(CONFIG_LCDKIT_DRIVER),y)
+EXTRA_CFLAGS += -Idrivers/devkit/lcdkit/include
+EXTRA_CFLAGS += -Idrivers/devkit/tpkit
+EXTRA_CFLAGS += -Idrivers/devkit/lcdkit/core/common/qcom
+obj-$(CONFIG_LCDKIT_DRIVER) += tp_color.o
+else
+ifeq ($(CONFIG_HUAWEI_KERNEL_LCD),y)
+obj-$(CONFIG_HUAWEI_KERNEL_LCD) += tp_color.o
+obj-$(CONFIG_HUAWEI_KERNEL_LCD) += hw_lcd_debug.o
+endif
+endif
+
 obj-$(CONFIG_FB_MSM_MDSS) += mdss_fb.o mdss_util.o
 obj-$(CONFIG_COMPAT) += mdss_compat_utils.o

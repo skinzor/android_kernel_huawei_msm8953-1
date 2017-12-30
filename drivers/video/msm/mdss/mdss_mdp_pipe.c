@@ -17,6 +17,11 @@
 #include <linux/errno.h>
 #include <linux/iopoll.h>
 #include <linux/mutex.h>
+#ifdef CONFIG_LCDKIT_DRIVER
+#include <linux/lcdkit_dsm.h>
+#else
+#include <linux/hw_lcd_common.h>
+#endif
 
 #include "mdss_mdp.h"
 #include "mdss_mdp_trace.h"
@@ -1644,6 +1649,13 @@ int mdss_mdp_pipe_fetch_halt(struct mdss_mdp_pipe *pipe, bool is_recovery)
 
 		pr_err("%pS: pipe%d is not idle. xin_id=%d\n",
 			__builtin_return_address(0), pipe->num, pipe->xin_id);
+#ifdef CONFIG_HUAWEI_DSM
+		#ifdef CONFIG_LCDKIT_DRIVER
+		lcdkit_report_dsm_err(DSM_LCD_MDSS_PIPE_ERROR_NO,0,pipe->xin_id,0);
+		#else
+		lcd_report_dsm_err(DSM_LCD_MDSS_PIPE_ERROR_NO,pipe->xin_id,0);
+		#endif
+#endif
 
 		mutex_lock(&mdata->reg_lock);
 		idle_mask = BIT(pipe->xin_id + 16);

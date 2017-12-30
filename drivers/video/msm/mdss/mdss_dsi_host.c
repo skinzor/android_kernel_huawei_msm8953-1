@@ -30,6 +30,12 @@
 #include "mdss_smmu.h"
 #include "mdss_dsi_phy.h"
 
+#ifndef CONFIG_LCDKIT_DRIVER
+#include <linux/hw_lcd_common.h>
+#else
+#include "lcdkit_dsi_host.h"
+#endif
+
 #define VSYNC_PERIOD 17
 #define DMA_TX_TIMEOUT 200
 #define DMA_TPG_FIFO_LEN 64
@@ -116,6 +122,11 @@ void mdss_dsi_ctrl_init(struct device *ctrl_dev,
 	mutex_init(&ctrl->mutex);
 	mutex_init(&ctrl->cmd_mutex);
 	mutex_init(&ctrl->clk_lane_mutex);
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	mutex_init(&ctrl->panel_data.LCD_checksum_lock);
+#endif
+#endif
 	mutex_init(&ctrl->cmdlist_mutex);
 	mdss_dsi_buf_alloc(ctrl_dev, &ctrl->tx_buf, SZ_4K);
 	mdss_dsi_buf_alloc(ctrl_dev, &ctrl->rx_buf, SZ_4K);
@@ -746,8 +757,6 @@ static void mdss_dsi_ctl_phy_reset(struct mdss_dsi_ctrl_pdata *ctrl, u32 event)
 	u32 data0, data1, mask = 0, data_lane_en = 0;
 	struct mdss_dsi_ctrl_pdata *ctrl0, *ctrl1;
 	u32 ln0, ln1, ln_ctrl0, ln_ctrl1, i;
-	int rc = 0;
-
 	/*
 	 * Add 2 ms delay suggested by HW team.
 	 * Check clk lane stop state after every 200 us
@@ -769,15 +778,9 @@ static void mdss_dsi_ctl_phy_reset(struct mdss_dsi_ctrl_pdata *ctrl, u32 event)
 		ctrl0 = mdss_dsi_get_ctrl_by_index(DSI_CTRL_0);
 		ctrl1 = mdss_dsi_get_ctrl_by_index(DSI_CTRL_1);
 
-		if (ctrl0->recovery) {
-			rc = ctrl0->recovery->fxn(ctrl0->recovery->data,
+		if (ctrl0->recovery)
+			ctrl0->recovery->fxn(ctrl0->recovery->data,
 					MDP_INTF_DSI_VIDEO_FIFO_OVERFLOW);
-			if (rc < 0) {
-				pr_debug("%s: Target is in suspend/shutdown\n",
-					__func__);
-				return;
-			}
-		}
 		/*
 		 * Disable PHY contention detection and receive.
 		 * Configure the strength ctrl 1 register.
@@ -867,15 +870,9 @@ static void mdss_dsi_ctl_phy_reset(struct mdss_dsi_ctrl_pdata *ctrl, u32 event)
 		 */
 		udelay(200);
 	} else {
-		if (ctrl->recovery) {
-			rc = ctrl->recovery->fxn(ctrl->recovery->data,
+		if (ctrl->recovery)
+			ctrl->recovery->fxn(ctrl->recovery->data,
 					MDP_INTF_DSI_VIDEO_FIFO_OVERFLOW);
-			if (rc < 0) {
-				pr_debug("%s: Target is in suspend/shutdown\n",
-					__func__);
-				return;
-			}
-		}
 		/* Disable PHY contention detection and receive */
 		MIPI_OUTP((ctrl->phy_io.base) + 0x0188, 0);
 
@@ -1410,6 +1407,84 @@ void mdss_dsi_ctrl_setup(struct mdss_dsi_ctrl_pdata *ctrl)
 	mdss_dsi_op_mode_config(pdata->panel_info.mipi.mode, pdata);
 }
 
+#ifndef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+int hw_mdss_dsi_bta_status_check(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+{
+	int ret = 0;
+	unsigned long flag;
+
+	if (ctrl_pdata == NULL) {
+		pr_err("%s: Invalid input data\n", __func__);
+
+		/*
+		 * This should not return error otherwise
+		 * BTA status thread will treat it as dead panel scenario
+		 * and request for blank/unblank
+		 */
+		return 0;
+	}
+
+	mutex_lock(&ctrl_pdata->cmd_mutex);
+
+	pr_debug("%s: Checking BTA status\n", __func__);
+
+	mdss_dsi_clk_ctrl(ctrl_pdata, ctrl_pdata->dsi_clk_handle,
+			  MDSS_DSI_ALL_CLKS, MDSS_DSI_CLK_ON);
+	spin_lock_irqsave(&ctrl_pdata->mdp_lock, flag);
+	reinit_completion(&ctrl_pdata->bta_comp);
+	mdss_dsi_enable_irq(ctrl_pdata, DSI_BTA_TERM);
+	spin_unlock_irqrestore(&ctrl_pdata->mdp_lock, flag);
+	MIPI_OUTP(ctrl_pdata->ctrl_base + 0x098, 0x01); /* trigger  */
+	wmb();
+
+	ret = wait_for_completion_killable_timeout(&ctrl_pdata->bta_comp,
+						DSI_BTA_EVENT_TIMEOUT);
+	if (ret <= 0) {
+		mdss_dsi_disable_irq(ctrl_pdata, DSI_BTA_TERM);
+		pr_err("%s: DSI BTA error: %i\n", __func__, ret);
+	}
+
+	mdss_dsi_clk_ctrl(ctrl_pdata, ctrl_pdata->dsi_clk_handle,
+			  MDSS_DSI_ALL_CLKS, MDSS_DSI_CLK_OFF);
+	pr_debug("%s: BTA done with ret: %d\n", __func__, ret);
+
+	mutex_unlock(&ctrl_pdata->cmd_mutex);
+
+	return ret;
+}
+
+int mdss_dsi_bta_status_check(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+{
+	int ret = 0;
+	struct mdss_panel_info *pinfo = &(ctrl_pdata->panel_data.panel_info);
+	if (ctrl_pdata == NULL) {
+		pr_err("%s: Invalid input data\n", __func__);
+		/*
+		* This should not return error otherwise
+		* BTA status thread will treat it as dead panel scenario
+		* and request for blank/unblank
+		*/
+		return 0;
+	}
+
+	pr_debug("%s: Checking BTA status\n", __func__);
+
+	if(pinfo->bta_timeout_check){
+		ret=hw_mdss_dsi_bta_status_check(ctrl_pdata);
+		if(ret <= 0){
+			pr_err("%s: DSI BTA error: %i\n", __func__, ret);
+			return 0;
+		}
+	}
+
+	/*if panel check error and enable the esd check bit in dtsi,report the event to hal layer*/
+	if(ctrl_pdata->esd_check_enable)
+		ret = panel_check_live_status(ctrl_pdata);
+	return ret;
+}
+#else
+
 /**
  * mdss_dsi_bta_status_check() - Check dsi panel status through bta check
  * @ctrl_pdata: pointer to the dsi controller structure
@@ -1464,6 +1539,8 @@ int mdss_dsi_bta_status_check(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 
 	return ret;
 }
+#endif
+#endif
 
 int mdss_dsi_cmd_reg_tx(u32 data,
 			unsigned char *ctrl_base)
@@ -2005,6 +2082,9 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 	char *bp;
 	struct mdss_dsi_ctrl_pdata *mctrl = NULL;
 	int ignored = 0;	/* overflow ignored */
+#ifdef CONFIG_HUAWEI_DSM
+	int rg_address;
+#endif
 
 	bp = tp->data;
 
@@ -2018,6 +2098,15 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 		if (IS_ERR_VALUE(ret)) {
 			pr_err("unable to map dma memory to iommu(%d)\n", ret);
 			ctrl->mdss_util->iommu_unlock();
+
+            #ifdef CONFIG_HUAWEI_DSM
+            #ifndef CONFIG_LCDKIT_DRIVER
+            lcd_report_dsm_err(DSM_LCD_MDSS_IOMMU_ERROR_NO,ret,0);
+            #else
+            lcdkit_report_dsm_err(DSM_LCD_MDSS_IOMMU_ERROR_NO,0,ret,0);
+            #endif
+            #endif
+
 			return -ENOMEM;
 		}
 		ctrl->dmap_iommu_map = true;
@@ -2075,8 +2164,13 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 		status = reg_val & DSI_INTR_CMD_DMA_DONE;
 		if (status) {
 			reg_val &= DSI_INTR_MASK_ALL;
-			/* clear CMD DMA and BTA_DONE isr only */
-			reg_val |= (DSI_INTR_CMD_DMA_DONE | DSI_INTR_BTA_DONE);
+            #ifndef CONFIG_LCDKIT_DRIVER
+			/* clear CMD DMA isr only */
+			reg_val |= DSI_INTR_CMD_DMA_DONE;
+            #else
+            /* clear CMD DMA and BTA_DONE isronly */
+            reg_val |= (DSI_INTR_CMD_DMA_DONE | DSI_INTR_BTA_DONE);
+            #endif
 			MIPI_OUTP(ctrl->ctrl_base + 0x0110, reg_val);
 			mdss_dsi_disable_irq_nosync(ctrl, DSI_CMD_TERM);
 			complete(&ctrl->dma_comp);
@@ -2106,6 +2200,17 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 		mctrl->dma_addr = 0;
 		mctrl->dma_size = 0;
 	}
+
+#ifdef CONFIG_HUAWEI_DSM
+	if (ret < 0) {
+		rg_address =  ((tp->len > 4) ? *(tp->data + 4) : *(tp->data));
+		#ifndef CONFIG_LCDKIT_DRIVER
+		lcd_report_dsm_err(DSM_LCD_MIPI_ERROR_NO, ret, rg_address);
+		#else
+		lcdkit_report_dsm_err(DSM_LCD_MIPI_ERROR_NO, 0, ret, rg_address);
+		#endif
+	}
+#endif
 
 	if (ctrl->dmap_iommu_map) {
 		mdss_smmu_dsi_unmap_buffer(ctrl->dma_addr, domain,
@@ -2334,7 +2439,11 @@ void mdss_dsi_wait4video_done(struct mdss_dsi_ctrl_pdata *ctrl)
 			msecs_to_jiffies(VSYNC_PERIOD * 4));
 
 	data = MIPI_INP((ctrl->ctrl_base) + 0x0110);
-	data &= DSI_INTR_TOTAL_MASK;
+	#ifndef CONFIG_LCDKIT_DRIVER
+    data &= DSI_INTR_TOTAL_MASK;
+    #else
+    data &= (DSI_INTR_TOTAL_MASK | DSI_INTR_VIDEO_DONE);
+    #endif
 	data &= ~DSI_INTR_VIDEO_DONE_MASK;
 	MIPI_OUTP((ctrl->ctrl_base) + 0x0110, data);
 }
@@ -2440,6 +2549,13 @@ void mdss_dsi_cmd_mdp_busy(struct mdss_dsi_ctrl_pdata *ctrl)
 			rc = 1;
 		spin_unlock_irqrestore(&ctrl->mdp_lock, flags);
 		if (!rc) {
+#ifdef CONFIG_HUAWEI_DSM
+			#ifndef CONFIG_LCDKIT_DRIVER
+			lcd_report_dsm_err(DSM_LCD_MDSS_MDP_BUSY_ERROR_NO,0,0);
+			#else
+			lcdkit_report_dsm_err(DSM_LCD_MDSS_MDP_BUSY_ERROR_NO,0,0,0);
+			#endif
+#endif
 			if (mdss_dsi_mdp_busy_tout_check(ctrl)) {
 				pr_err("%s: timeout error\n", __func__);
 				MDSS_XLOG_TOUT_HANDLER("mdp", "dsi0_ctrl",
@@ -2983,13 +3099,6 @@ static bool mdss_dsi_fifo_status(struct mdss_dsi_ctrl_pdata *ctrl)
 
 		pr_err("%s: status=%x\n", __func__, status);
 
-		/*
-		 * if DSI FIFO overflow is masked,
-		 * do not report overflow error
-		 */
-		if (MIPI_INP(base + 0x10c) & 0xf0000)
-			status = status & 0xaaaaffff;
-
 		if (status & 0x44440000) {/* DLNx_HS_FIFO_OVERFLOW */
 			dsi_send_events(ctrl, DSI_EV_DLNx_FIFO_OVERFLOW, 0);
 			/* Ignore FIFO EMPTY when overflow happens */
@@ -3114,6 +3223,11 @@ irqreturn_t mdss_dsi_isr(int irq, void *ptr)
 	u32 intr;
 	struct mdss_dsi_ctrl_pdata *ctrl =
 			(struct mdss_dsi_ctrl_pdata *)ptr;
+#ifdef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_DSM
+	u32 dsi_status[5] = {0};
+#endif
+#endif
 
 	if (!ctrl->ctrl_base) {
 		pr_err("%s:%d DSI base adr no Initialized",
@@ -3153,6 +3267,21 @@ irqreturn_t mdss_dsi_isr(int irq, void *ptr)
 			mdss_dsi_set_reg(ctrl, 0x0c, 0x44440000, 0x44440000);
 		}
 		spin_unlock(&ctrl->mdp_lock);
+	}
+
+	if (isr & DSI_INTR_ERROR) {
+		MDSS_XLOG(ctrl->ndx, ctrl->mdp_busy, isr, 0x97);
+#ifdef CONFIG_LCDKIT_DRIVER
+#ifdef CONFIG_HUAWEI_DSM
+		dsi_status[0] = MIPI_INP(ctrl->ctrl_base + 0x0068);/* DSI_ACK_ERR_STATUS */
+		dsi_status[1] = MIPI_INP(ctrl->ctrl_base + 0x00c0);/* DSI_TIMEOUT_STATUS */
+		dsi_status[2] = MIPI_INP(ctrl->ctrl_base + 0x00b4);/* DSI_DLN0_PHY_ERR */
+		dsi_status[3] = MIPI_INP(ctrl->ctrl_base + 0x000c);/* DSI_FIFO_STATUS */
+		dsi_status[4] = MIPI_INP(ctrl->ctrl_base + 0x0008);/* DSI_STATUS */
+		lcdkit_record_dsm_err(dsi_status);
+#endif
+#endif
+		mdss_dsi_error(ctrl);
 	}
 
 	if (isr & DSI_INTR_VIDEO_DONE) {
@@ -3201,3 +3330,7 @@ irqreturn_t mdss_dsi_isr(int irq, void *ptr)
 
 	return IRQ_HANDLED;
 }
+#ifdef CONFIG_LCDKIT_DRIVER
+#include "lcdkit_dsi_host.c"
+#endif
+

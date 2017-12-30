@@ -25,6 +25,14 @@
 #include "mdss_panel.h"
 #include "mdss_debug.h"
 #include "mdss_mdp_trace.h"
+#ifdef CONFIG_LCDKIT_DRIVER
+#include <linux/lcdkit_dsm.h>
+#include "lcdkit_dsi_status.h"
+#else
+#include <linux/hw_lcd_common.h>
+#endif
+
+extern unsigned int cpufreq_get(unsigned int cpu);
 
 /* wait for at least 2 vsyncs for lowest refresh rate (24hz) */
 #define VSYNC_TIMEOUT_US 100000
@@ -310,7 +318,7 @@ int mdss_mdp_video_addr_setup(struct mdss_data_type *mdata,
 	return 0;
 }
 
-static int mdss_mdp_video_intf_recovery(void *data, int event)
+static void mdss_mdp_video_intf_recovery(void *data, int event)
 {
 	struct mdss_mdp_video_ctx *ctx;
 	struct mdss_mdp_ctl *ctl = data;
@@ -322,7 +330,7 @@ static int mdss_mdp_video_intf_recovery(void *data, int event)
 
 	if (!data) {
 		pr_err("%s: invalid ctl\n", __func__);
-		return -EINVAL;
+		return;
 	}
 
 	/*
@@ -333,7 +341,7 @@ static int mdss_mdp_video_intf_recovery(void *data, int event)
 	if (event != MDP_INTF_DSI_VIDEO_FIFO_OVERFLOW) {
 		pr_warn("%s: unsupported recovery event:%d\n",
 					__func__, event);
-		return -EPERM;
+		return;
 	}
 
 	ctx = ctl->intf_ctx[MASTER_CTX];
@@ -348,7 +356,7 @@ static int mdss_mdp_video_intf_recovery(void *data, int event)
 	clk_rate = DIV_ROUND_UP_ULL(clk_rate, 1000); /* in kHz */
 	if (!clk_rate) {
 		pr_err("Unable to get proper clk_rate\n");
-		return -EINVAL;
+		return;
 	}
 	/*
 	 * calculate clk_period as pico second to maintain good
@@ -358,7 +366,7 @@ static int mdss_mdp_video_intf_recovery(void *data, int event)
 	clk_period = DIV_ROUND_UP_ULL(1000000000, clk_rate);
 	if (!clk_period) {
 		pr_err("Unable to calculate clock period\n");
-		return -EINVAL;
+		return;
 	}
 	min_ln_cnt = pinfo->lcdc.v_back_porch + pinfo->lcdc.v_pulse_width;
 	active_lns_cnt = pinfo->yres;
@@ -384,7 +392,7 @@ static int mdss_mdp_video_intf_recovery(void *data, int event)
 				!ctx->timegen_en) {
 			pr_warn("Target is in suspend or shutdown pending\n");
 			mutex_unlock(&ctl->offlock);
-			return -EPERM;
+			return;
 		}
 
 		line_cnt = mdss_mdp_video_line_count(ctl);
@@ -394,7 +402,7 @@ static int mdss_mdp_video_intf_recovery(void *data, int event)
 			pr_debug("%s, Needed lines left line_cnt=%d\n",
 						__func__, line_cnt);
 			mutex_unlock(&ctl->offlock);
-			return 0;
+			return;
 		} else {
 			pr_warn("line count is less. line_cnt = %d\n",
 								line_cnt);
@@ -824,6 +832,11 @@ static int mdss_mdp_video_ctx_stop(struct mdss_mdp_ctl *ctl,
 
 	mutex_lock(&ctl->offlock);
 	if (ctx->timegen_en) {
+	/*cancle the esd delay work*/
+#ifdef CONFIG_LCDKIT_DRIVER
+		mdss_dsi_status_check_ctl(ctl->mfd,false);
+#endif
+
 		rc = mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_BLANK, NULL,
 			CTL_INTF_EVENT_FLAG_DEFAULT);
 		if (rc == -EBUSY) {
@@ -1099,6 +1112,16 @@ static void mdss_mdp_video_underrun_intr_done(void *arg)
 	trace_mdp_video_underrun_done(ctl->num, ctl->underrun_cnt);
 	pr_debug("display underrun detected for ctl=%d count=%d\n", ctl->num,
 			ctl->underrun_cnt);
+
+#ifdef CONFIG_HUAWEI_DSM
+#ifdef CONFIG_LCDKIT_DRIVER
+	lcdkit_underrun_dsm_report(ctl->num,ctl->underrun_cnt,cpufreq_get(0),
+		mdss_mdp_get_clk_rate(MDSS_CLK_AXI, false),
+		mdss_mdp_get_clk_rate(MDSS_CLK_AHB, false));
+#else
+	mdp_underrun_dsm_report(ctl->num,ctl->underrun_cnt);
+#endif
+#endif
 
 	if (!test_bit(MDSS_CAPS_3D_MUX_UNDERRUN_RECOVERY_SUPPORTED,
 		ctl->mdata->mdss_caps_map) &&
@@ -1473,6 +1496,13 @@ static int mdss_mdp_video_display(struct mdss_mdp_ctl *ctl, void *arg)
 		reinit_completion(&ctx->vsync_comp);
 	} else {
 		WARN(1, "commit without wait! ctl=%d", ctl->num);
+#ifdef CONFIG_HUAWEI_DSM
+		#ifdef CONFIG_LCDKIT_DRIVER
+		lcdkit_report_dsm_err(DSM_LCD_MDSS_VIDEO_DISPLAY_ERROR_NO,0,ctl->num,0);
+		#else
+		lcd_report_dsm_err(DSM_LCD_MDSS_VIDEO_DISPLAY_ERROR_NO,ctl->num,0);
+		#endif
+#endif
 	}
 
 	MDSS_XLOG(ctl->num, ctl->underrun_cnt);
@@ -1531,6 +1561,11 @@ static int mdss_mdp_video_display(struct mdss_mdp_ctl *ctl, void *arg)
 		WARN(rc, "intf %d panel on error (%d)\n", ctl->intf_num, rc);
 		mdss_mdp_ctl_intf_event(ctl, MDSS_EVENT_POST_PANEL_ON, NULL,
 			CTL_INTF_EVENT_FLAG_DEFAULT);
+	/*scheduled the esd delay work*/
+#if defined(CONFIG_HUAWEI_KERNEL_LCD) || defined(CONFIG_LCDKIT_DRIVER)
+		mdss_dsi_status_check_ctl(ctl->mfd,true);
+#endif
+
 	}
 
 	if (mdss_mdp_is_lineptr_supported(ctl))
