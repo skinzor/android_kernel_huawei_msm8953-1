@@ -213,6 +213,7 @@ void cnss_sdio_remove_pm_qos(void)
 	if (!cnss_pdata)
 		return;
 
+
 	pm_qos_remove_request(&cnss_pdata->qos_request);
 	pr_debug("%s: PM QoS removed\n", __func__);
 }
@@ -1326,6 +1327,7 @@ static int cnss_sdio_remove(struct platform_device *pdev)
 	cnss_ramdump_cleanup();
 	cnss_put_hw_resources(info->dev);
 	cnss_sdio_release_resource();
+
 	cnss_pdata = NULL;
 	return 0;
 }

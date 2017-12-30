@@ -3256,6 +3256,73 @@ static int emac_pm_sys_suspend(struct device *device)
 		pm_runtime_set_suspended(netdev->dev.parent);
 		pm_runtime_enable(netdev->dev.parent);
 	}
+	return 0;
+error:
+	return retval;
+}
+
+#ifdef CONFIG_PM_RUNTIME
+static int emac_pm_runtime_suspend(struct device *device)
+{
+	return emac_pm_suspend(device, true);
+}
+
+static int emac_pm_runtime_resume(struct device *device)
+{
+	return emac_pm_resume(device);
+}
+
+static int emac_pm_runtime_idle(struct device *device)
+{
+	return 0;
+}
+#else
+#define emac_pm_runtime_suspend NULL
+#define emac_pm_runtime_resume	NULL
+#define emac_pm_runtime_idle	NULL
+#endif /* CONFIG_PM_RUNTIME */
+
+#ifdef CONFIG_PM_SLEEP
+static int emac_pm_sys_suspend(struct device *device)
+{
+	struct platform_device *pdev = to_platform_device(device);
+	struct net_device *netdev = dev_get_drvdata(&pdev->dev);
+	struct emac_adapter *adpt = netdev_priv(netdev);
+	struct emac_phy *phy = &adpt->phy;
+	bool link_up = false;
+
+	/* Check link state. Don't suspend if link is up */
+	if (netif_carrier_ok(adpt->netdev))
+		return -EPERM;
+
+	phy->link_speed = EMAC_LINK_SPEED_10_HALF;
+	phy->link_up = link_up;
+
+	/* Disable EPHY WOL interrupt*/
+	emac_wol_gpio_irq(adpt, false);
+
+	if (!pm_runtime_enabled(device) || !pm_runtime_suspended(device)) {
+		emac_pm_suspend(device, false);
+		/* Synchronize runtime-pm and system-pm states:
+		 * at this point we are already suspended. However, the
+		 * runtime-PM framework still thinks that we are active.
+		 * The three calls below let the runtime-PM know that we are
+		 * suspended already without re-invoking the suspend callback
+		 */
+		pm_runtime_disable(netdev->dev.parent);
+		pm_runtime_set_suspended(netdev->dev.parent);
+		pm_runtime_enable(netdev->dev.parent);
+	}
+
+	netif_device_detach(netdev);
+	return 0;
+}
+
+static int emac_pm_sys_resume(struct device *device)
+{
+	struct platform_device *pdev = to_platform_device(device);
+	struct net_device *netdev = dev_get_drvdata(&pdev->dev);
+	struct emac_adapter *adpt = netdev_priv(netdev);
 
 	netif_device_detach(netdev);
 	return 0;
