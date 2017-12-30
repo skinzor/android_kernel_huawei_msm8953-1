@@ -34,6 +34,8 @@
 #include "../pinconf.h"
 #include "pinctrl-msm.h"
 #include "../pinctrl-utils.h"
+#include <linux/hw_power_monitor.h>
+#include <linux/wakeup_reason.h>
 
 #define MAX_NR_GPIO 300
 #define PS_HOLD_OFFSET 0x820
@@ -531,13 +533,33 @@ static void msm_gpio_dbg_show_one(struct seq_file *s,
 	seq_printf(s, " %s", pulls[pull]);
 }
 
+/* forbid AP to access some gpios(they are controled by TZ),
+   filter them by this list.
+   case number:02383905
+*/
+static int gpio_tz(int gpio)
+{
+	static const int gpios_TZ[] = {0,1,2,3,135,136,137,138};
+	int i = 0;
+
+	for(i = 0; i < (sizeof gpios_TZ / sizeof gpios_TZ[0]); i++)
+	{
+		if(gpios_TZ[i] == gpio)
+		{
+			return 1;
+		}
+	}
+	return 0;
+}
+
 static void msm_gpio_dbg_show(struct seq_file *s, struct gpio_chip *chip)
 {
 	unsigned gpio = chip->base;
 	unsigned i;
 
 	for (i = 0; i < chip->ngpio; i++, gpio++) {
-		msm_gpio_dbg_show_one(s, NULL, chip, i, gpio);
+		if(!gpio_tz(i))
+			msm_gpio_dbg_show_one(s, NULL, chip, i, gpio);
 		seq_puts(s, "\n");
 	}
 }
@@ -797,6 +819,7 @@ static struct irq_chip msm_gpio_irq_chip = {
 	.irq_set_wake   = msm_gpio_irq_set_wake,
 };
 
+extern bool ready_to_wakeup;
 static void msm_gpio_irq_handler(unsigned int irq, struct irq_desc *desc)
 {
 	struct gpio_chip *gc = irq_desc_get_handler_data(desc);
@@ -819,6 +842,10 @@ static void msm_gpio_irq_handler(unsigned int irq, struct irq_desc *desc)
 		val = readl(pctrl->regs + g->intr_status_reg);
 		if (val & BIT(g->intr_status_bit)) {
 			irq_pin = irq_find_mapping(gc->irqdomain, i);
+			if(ready_to_wakeup){
+				pr_err("gpio %d triggered\n", (unsigned int)i);
+                                power_monitor_report(WAKEUP_GPIO,"%d",(unsigned int)i);
+                        }
 			generic_handle_irq(irq_pin);
 			handled++;
 		}
@@ -963,6 +990,7 @@ static void msm_pinctrl_resume(void)
 				name = desc->action->name;
 
 			pr_warn("%s: %d triggered %s\n", __func__, irq, name);
+			log_wakeup_reason(irq);
 		}
 	}
 	spin_unlock_irqrestore(&pctrl->lock, flags);
