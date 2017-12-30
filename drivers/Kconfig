@@ -196,8 +196,30 @@ source "drivers/sensors/Kconfig"
 
 source "drivers/firmware/Kconfig"
 
+source "drivers/huawei/Kconfig"
+
 source "drivers/bif/Kconfig"
 
 source "drivers/gud/Kconfig"
+
+source "drivers/dsm/Kconfig"
+
+source "drivers/huawei_platform/Kconfig"
+
+source "drivers/hwusb/Kconfig"
+
+source "drivers/hwbfm/Kconfig"
+
+source "drivers/hw_fac_info/Kconfig"
+
+source "drivers/devdetect/Kconfig"
+
+source "drivers/srecorder/Kconfig"
+
+source "drivers/devkit/lcdkit/Kconfig"
+
+source "drivers/devkit/tpkit/Kconfig"
+
+source "drivers/cpu_stress/Kconfig"
 
 endmenu
