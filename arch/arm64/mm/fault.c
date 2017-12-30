@@ -42,7 +42,33 @@
 
 #include <trace/events/exception.h>
 
+#ifdef CONFIG_HUAWEI_BOOST_SIGKILL_FREE
+#include <linux/boost_sigkill_free.h>
+#endif
+
 static const char *fault_name(unsigned int esr);
+
+#ifdef CONFIG_KPROBES
+static inline int notify_page_fault(struct pt_regs *regs, unsigned int esr)
+{
+	int ret = 0;
+
+	/* kprobe_running() needs smp_processor_id() */
+	if (!user_mode(regs)) {
+		preempt_disable();
+		if (kprobe_running() && kprobe_fault_handler(regs, esr))
+			ret = 1;
+		preempt_enable();
+	}
+
+	return ret;
+}
+#else
+static inline int notify_page_fault(struct pt_regs *regs, unsigned int esr)
+{
+	return 0;
+}
+#endif
 
 /*
  * Dump out the page tables associated with 'addr' in mm 'mm'.
@@ -124,11 +150,27 @@ static void __do_user_fault(struct task_struct *tsk, unsigned long addr,
 
 	if (show_unhandled_signals && unhandled_signal(tsk, sig) &&
 	    printk_ratelimit()) {
+#if 1
+		/* when appeared user exception and repeated,
+		   just print the first exception log */
+		static pid_t prev_tgid=0xFFFF;
+		static unsigned long prev_addr=0xFFFFFFFF;
+		if (prev_tgid != tsk->tgid || prev_addr != addr ) {
+			pr_info("%s[%d]: unhandled %s (%d) at 0x%08lx, esr 0x%03x\n",
+				tsk->comm, task_pid_nr(tsk), fault_name(esr), sig,
+				addr, esr);
+			show_pte(tsk->mm, addr);
+			show_regs(regs);
+			prev_tgid = tsk->tgid;
+			prev_addr = addr;
+		}
+#else
 		pr_info("%s[%d]: unhandled %s (%d) at 0x%08lx, esr 0x%03x\n",
 			tsk->comm, task_pid_nr(tsk), fault_name(esr), sig,
 			addr, esr);
 		show_pte(tsk->mm, addr);
 		show_regs(regs);
+#endif
 	}
 
 	tsk->thread.fault_address = addr;
@@ -166,6 +208,15 @@ static int __do_page_fault(struct mm_struct *mm, unsigned long addr,
 {
 	struct vm_area_struct *vma;
 	int fault;
+
+#ifdef CONFIG_HUAWEI_BOOST_SIGKILL_FREE
+	if (unlikely(test_bit(MMF_FAST_FREEING, &mm->flags))) {
+		task_clear_jobctl_pending(tsk, JOBCTL_PENDING_MASK);
+		sigaddset(&tsk->pending.signal, SIGKILL);
+		set_tsk_thread_flag(tsk, TIF_SIGPENDING);
+		return VM_FAULT_BADMAP;
+	}
+#endif
 
 	vma = find_vma(mm, addr);
 	fault = VM_FAULT_BADMAP;
@@ -206,6 +257,9 @@ static int __kprobes do_page_fault(unsigned long addr, unsigned int esr,
 	int fault, sig, code;
 	unsigned long vm_flags = VM_READ | VM_WRITE | VM_EXEC;
 	unsigned int mm_flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+
+	if (notify_page_fault(regs, esr))
+		return 0;
 
 	tsk = current;
 	mm  = tsk->mm;

@@ -64,6 +64,11 @@
 #include <asm/psci.h>
 #include <asm/efi.h>
 
+#ifdef CONFIG_DUMP_SYS_INFO
+#include <linux/module.h>
+#include <linux/srecorder.h>
+#endif
+
 unsigned int processor_id;
 EXPORT_SYMBOL(processor_id);
 
@@ -96,6 +101,14 @@ EXPORT_SYMBOL(cold_boot);
 static const char *cpu_name;
 static const char *machine_name;
 phys_addr_t __fdt_pointer __initdata;
+
+#ifdef CONFIG_DUMP_SYS_INFO
+unsigned long get_cpu_name(void)
+{
+    return (unsigned long)&cpu_name;
+}
+EXPORT_SYMBOL(get_cpu_name);
+#endif
 
 /*
  * Standard memory resources
