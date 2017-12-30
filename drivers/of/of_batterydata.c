@@ -20,6 +20,12 @@
 #include <linux/batterydata-lib.h>
 #include <linux/power_supply.h>
 
+/*
+ * The standard battery id range is between 960 and 450K ohm,
+ * we use the 1000K as default battery data id resistance.
+ */
+#define DEFAULT_BATT_ID	1000
+
 static int of_batterydata_read_lut(const struct device_node *np,
 			int max_cols, int max_rows, int *ncols, int *nrows,
 			int *col_legend_data, int *row_legend_data,
@@ -315,7 +321,7 @@ struct device_node *of_batterydata_get_best_profile(
 		const char *psy_name,  const char  *batt_type)
 {
 	struct batt_ids batt_ids;
-	struct device_node *node, *best_node = NULL;
+	struct device_node *node, *best_node = NULL, *default_node = NULL;
 	struct power_supply *psy;
 	const char *battery_type = NULL;
 	union power_supply_propval ret = {0, };
@@ -383,12 +389,17 @@ struct device_node *of_batterydata_get_best_profile(
 					best_delta = delta;
 					best_id_kohm = batt_ids.kohm[i];
 				}
+				if (batt_ids.kohm[i] == DEFAULT_BATT_ID) {
+					default_node = node;
+				}
 			}
 		}
 	}
 
 	if (best_node == NULL) {
-		pr_err("No battery data found\n");
+		/* if no battery id is matched, use the default */
+		best_node = default_node;
+		pr_info("use default battery data\n");
 		return best_node;
 	}
 
