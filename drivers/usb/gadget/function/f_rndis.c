@@ -806,8 +806,23 @@ static void rndis_close(struct gether *geth)
 /* Some controllers can't support RNDIS ... */
 static inline bool can_support_rndis(struct usb_configuration *c)
 {
-	/* everything else is *presumably* fine */
+	/* consumercellular/us wants to support rndis now */
+	/* requirement of tracfone/us, do not support rndis.
+	 */
+#ifdef CONFIG_HUAWEI_USB
+	if (!strcmp(usb_parameter.country_name, COUNTRY_US) && !strcmp(usb_parameter.vender_name, VENDOR_TRACFONE)) {
+		pr_info("%s: customization requirement, rndis not supported\n", __func__);
+		return false;
+	} else if (usb_parameter.hw_custom_features & HW_CUSTOM_FEATURES_USB_TETHER_DISABLED) {
+		pr_info("%s: hw_custom_features is set, rndis not supported\n", __func__);
+		return false;
+	} else {
+		pr_info("%s: general product, rndis supported\n", __func__);
+		return true;
+	}
+#else
 	return true;
+#endif
 }
 
 /* ethernet function driver setup/binding */

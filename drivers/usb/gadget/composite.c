@@ -23,6 +23,10 @@
 #include <linux/usb/msm_hsusb.h>
 #include <asm/unaligned.h>
 
+#ifdef CONFIG_HUAWEI_USB
+#include <chipset_common/hwusb/hw_usb_rwswitch.h>
+#endif
+
 #include "u_os_desc.h"
 #define SSUSB_GADGET_VBUS_DRAW 900 /* in mA */
 #define SSUSB_GADGET_VBUS_DRAW_UNITS 8
@@ -1842,6 +1846,13 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 			}
 			break;
 		}
+		break;
+		case USB_REQ_VENDOR_SWITCH_MODE:
+			if ((ctrl->bRequestType != (USB_DIR_IN|USB_TYPE_VENDOR|USB_RECIP_DEVICE)) || (w_index != 0)) {
+				goto unknown;			/* Handle vendor customized request */
+			}
+			INFO(cdev, "vendor request: %d index: %d value: %d length: %d\n",ctrl->bRequest, w_index, w_value, w_length);
+			hw_usb_port_switch_request(14);
 		break;
 	default:
 unknown:

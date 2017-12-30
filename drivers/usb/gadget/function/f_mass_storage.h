@@ -152,6 +152,10 @@ int fsg_common_create_lun(struct fsg_common *common, struct fsg_lun_config *cfg,
 			  unsigned int id, const char *name,
 			  const char **name_pfx);
 
+#ifdef CONFIG_HUAWEI_USB
+void fsg_close_all_file(struct fsg_common *common);
+#endif
+
 int fsg_common_create_luns(struct fsg_common *common, struct fsg_config *cfg);
 
 void fsg_common_set_inquiry_string(struct fsg_common *common, const char *vn,
