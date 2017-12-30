@@ -17,12 +17,155 @@
 #include "camera.h"
 #include "msm_cci.h"
 #include "msm_camera_dt_util.h"
+#include "msm_camera_io_util.h"
 
+#include "misc/app_info.h"
+#ifdef CONFIG_HUAWEI_HW_DEV_DCT
+#include <linux/hw_dev_dec.h>
+#endif
+#include "sensor_otp_common_if.h"
 /* Logging macro */
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
 
 #define SENSOR_MAX_MOUNTANGLE (360)
+
+enum run_mode_enum{	
+    RUN_MODE_INIT = 0,	
+    RUN_MODE_FACTORY,   
+    RUN_MODE_NORMAL,};
+extern char *saved_command_line;
+
+#define PT_CAMERA_POWER_NUM 3
+#define PT_CAMERA_LABLE_NAME_LEN 64
+#define PRODUCT_NAME_MILAN "Milan"
+#define PRODUCT_NAME_CANNES "Cannes"
+#define CAMERA_VANA_NAME "cam_vana"
+#define CAMERA_VDIG_NAME "cam_vdig"
+#define CAMERA_AF_AVDD_NAME "cam_vaf"
+
+#define MAIN_CAMERA_BIT_START 1
+#define MAIN_CAMERA_BIT_END 4
+#define SLAVE_CAMERA_BIT_START 5
+#define SLAVE_CAMERA_BIT_END 7
+#define IS_BIT_TRUE(num, bit_num) (((num >> bit_num) & 1) == 1)
+#define PT_ACTION_VALUE(action) (action & 1)
+
+enum PT_CAMERA_TYPE{
+    MAIN_DVDD = 1,
+    MAIN_AF_AVDD,
+    MAIN_AVDD,
+    MAIN_DOVDD,
+    SLAVE_DVDD,
+    SLAVE_AVDD,
+    SLAVE_DOVDD,
+    PT_POWER_TYPE_MAX
+};
+
+typedef struct PT_camera_vergs{
+    enum PT_CAMERA_TYPE pt_type;
+    char verg_name[PT_CAMERA_LABLE_NAME_LEN];
+}PT_camera_verg_t;
+typedef struct PT_camera_gpios{
+    enum msm_sensor_power_seq_gpio_t gpio_enum;
+    enum PT_CAMERA_TYPE pt_type;
+    char lable[PT_CAMERA_LABLE_NAME_LEN];
+}PT_camera_gpios_t;
+
+typedef struct PT_camera_power_one{
+    int  test_enable;
+    PT_camera_verg_t *camera_power_verg;
+    int camera_power_vergs_num;
+    PT_camera_gpios_t *camera_power_gpios;
+    int camera_power_gpio_num;
+}PT_camera_power_one_t;
+
+typedef struct PT_camera_power{
+    char *product_name;
+    PT_camera_power_one_t PT_camera_power_one[MAX_CAMERAS];
+}PT_camera_power_t;
+
+/*the vergs and gpios of MILAN*/
+static PT_camera_verg_t camera_power_milan_main_vergs[] = {
+    {MAIN_AVDD,CAMERA_VANA_NAME},
+    {MAIN_DVDD,CAMERA_VDIG_NAME},
+    {MAIN_AF_AVDD,CAMERA_AF_AVDD_NAME},
+};
+/*change back camera VIO to VAF_PWD, from GPIO134 to GPIO22.
+  because, the front camera will test GPIO134. so main camera don't need to test.
+*/
+static PT_camera_gpios_t camera_power_milan_main_gpios[] = {
+    {SENSOR_GPIO_AF_PWDM,MAIN_DOVDD,"VAF_PWD"},
+};
+
+static PT_camera_verg_t camera_power_milan_slave_vergs[] = {
+    {SLAVE_DVDD,CAMERA_VDIG_NAME},
+};
+static PT_camera_gpios_t camera_power_milan_slave_gpios[] = {
+    {SENSOR_GPIO_VANA,SLAVE_AVDD,"VANA"},
+    {SENSOR_GPIO_VIO,SLAVE_DOVDD,"VIO"}, //the same iovdd with main camera
+};
+/*the vergs and gpios of CANNES*/
+static PT_camera_verg_t camera_power_cannes_main_vergs[] = {
+    {MAIN_AVDD,CAMERA_VANA_NAME},
+    {MAIN_DVDD,CAMERA_VDIG_NAME},
+    {MAIN_AF_AVDD,CAMERA_AF_AVDD_NAME},
+};
+/*change back camera VIO to VAF_PWD, from GPIO134 to GPIO22.
+  because, the front camera will test GPIO134. so main camera don't need to test.
+*/
+static PT_camera_gpios_t camera_power_cannes_main_gpios[] = {
+    {SENSOR_GPIO_AF_PWDM,MAIN_DOVDD,"VAF_PWD"},
+};
+
+static PT_camera_verg_t camera_power_cannes_slave_vergs[] = {
+    {SLAVE_DVDD,CAMERA_VDIG_NAME},
+};
+static PT_camera_gpios_t camera_power_cannes_slave_gpios[] = {
+    {SENSOR_GPIO_VANA,SLAVE_AVDD,"VANA"},
+    {SENSOR_GPIO_VIO,SLAVE_DOVDD,"VIO"}, //the same iovdd with main camera
+};
+
+static PT_camera_power_t camera_power_pt_ctrl[] = {
+    {
+        .product_name = PRODUCT_NAME_MILAN,
+        .PT_camera_power_one = {
+            {
+                .test_enable = 1, //main camera
+                .camera_power_verg = camera_power_milan_main_vergs,
+                .camera_power_vergs_num = ARRAY_SIZE(camera_power_milan_main_vergs),
+                .camera_power_gpios = camera_power_milan_main_gpios,
+                .camera_power_gpio_num = ARRAY_SIZE(camera_power_milan_main_gpios),
+            },
+            {
+                .test_enable = 1, //slave camera
+                .camera_power_verg = camera_power_milan_slave_vergs,
+                .camera_power_vergs_num = ARRAY_SIZE(camera_power_milan_slave_vergs),
+                .camera_power_gpios = camera_power_milan_slave_gpios,
+                .camera_power_gpio_num = ARRAY_SIZE(camera_power_milan_slave_gpios),
+            },
+        },
+    },
+    {
+        .product_name = PRODUCT_NAME_CANNES,
+        .PT_camera_power_one = {
+            {
+                .test_enable = 1, //main camera
+                .camera_power_verg = camera_power_cannes_main_vergs,
+                .camera_power_vergs_num = ARRAY_SIZE(camera_power_cannes_main_vergs),
+                .camera_power_gpios = camera_power_cannes_main_gpios,
+                .camera_power_gpio_num = ARRAY_SIZE(camera_power_cannes_main_gpios),
+            },
+            {
+                .test_enable = 1, //slave camera
+                .camera_power_verg = camera_power_cannes_slave_vergs,
+                .camera_power_vergs_num = ARRAY_SIZE(camera_power_cannes_slave_vergs),
+                .camera_power_gpios = camera_power_cannes_slave_gpios,
+                .camera_power_gpio_num = ARRAY_SIZE(camera_power_cannes_slave_gpios),
+            },
+        },
+    },
+};
 
 static struct v4l2_file_operations msm_sensor_v4l2_subdev_fops;
 static int32_t msm_sensor_driver_platform_probe(struct platform_device *pdev);
@@ -645,6 +788,8 @@ int32_t msm_sensor_driver_probe(void *setting,
 
 	unsigned long                        mount_pos = 0;
 	uint32_t                             is_yuv;
+	struct cam_id_info_t *cam_id_info = NULL;
+    int32_t otp_index = -1;
 
 	/* Validate input parameters */
 	if (!setting) {
@@ -712,6 +857,7 @@ int32_t msm_sensor_driver_probe(void *setting,
 			slave_info32->sensor_init_params;
 		slave_info->output_format =
 			slave_info32->output_format;
+		slave_info->cam_id_info = compat_ptr(slave_info32->cam_id_info);
 		kfree(slave_info32);
 	} else
 #endif
@@ -765,19 +911,19 @@ int32_t msm_sensor_driver_probe(void *setting,
 		 * and probe already succeeded for that sensor. Ignore this
 		 * probe
 		 */
-		if (slave_info->sensor_id_info.sensor_id ==
-			s_ctrl->sensordata->cam_slave_info->
-				sensor_id_info.sensor_id) {
-			pr_err("slot%d: sensor id%d already probed\n",
+		// Only if the sensor name is the same, we consider that the sesnor has been probed
+		// Because there are different cameras have the same sensor id
+		if (!strcmp(slave_info->sensor_name, s_ctrl->sensordata->sensor_name)) {
+			pr_err("slot%d: sensor id:0x%X sensor name:%s already probed\n",
 				slave_info->camera_id,
 				s_ctrl->sensordata->cam_slave_info->
-					sensor_id_info.sensor_id);
+					sensor_id_info.sensor_id,
+				slave_info->sensor_name);
 			msm_sensor_fill_sensor_info(s_ctrl,
 				probed_info, entity_name);
 		} else
-			pr_err("slot %d has some other sensor\n",
-				slave_info->camera_id);
-
+			pr_err("slot %d has some other sensor, probe %s stop\n",
+				slave_info->camera_id, slave_info->sensor_name);
 		rc = 0;
 		goto free_slave_info;
 	}
@@ -808,6 +954,26 @@ int32_t msm_sensor_driver_probe(void *setting,
 		slave_info->sensor_id_info.sensor_id_reg_addr;
 	camera_info->sensor_id = slave_info->sensor_id_info.sensor_id;
 	camera_info->sensor_id_mask = slave_info->sensor_id_info.sensor_id_mask;
+
+	if(slave_info->cam_id_info){
+		cam_id_info = kzalloc(sizeof(*cam_id_info), GFP_KERNEL);
+		if(!cam_id_info){
+			pr_err("failed, no memory cam_id_info %p\n",cam_id_info);
+			goto free_camera_info;
+		}
+
+		camera_info->cam_id_info = cam_id_info;
+
+		if(copy_from_user(cam_id_info, slave_info->cam_id_info,
+				sizeof(struct cam_id_info_t))){
+			pr_err("failed:copy cam_id_info\n");
+			goto free_cam_id_info;
+		}
+
+		pr_err("cam_id:%d\n", cam_id_info->cam_expected_id);
+	} else {
+		pr_err("%s, no need to probe cam id\n",slave_info->sensor_name);
+	}
 
 	/* Fill CCI master, slave address and CCI default params */
 	if (!s_ctrl->sensor_i2c_client) {
@@ -894,7 +1060,52 @@ CSID_TG:
 		goto free_camera_info;
 	}
 
+	//load otp info
+	if ( is_exist_otp_function(s_ctrl, &otp_index)){
+		if(otp_function_lists[otp_index].is_boot_load){
+			rc = otp_function_lists[otp_index].sensor_otp_function(s_ctrl, otp_index);
+			if (rc < 0){
+				pr_err("%s:%d load otp failed rc %d, continue to probe\n"
+				, __func__,__LINE__, rc);
+			}
+			if(NULL != s_ctrl->sensordata->slave_info->cam_id_info 
+				&& 0 != s_ctrl->sensordata->slave_info->cam_id_info->cam_vendor_id){
+				if(s_ctrl->sensordata->slave_info->cam_id_info->cam_vendor_id != s_ctrl->vendor_otp_info.vendor_id){
+					pr_err("%s check vendor_id failed,from lib is: %d, but from otp is %d \n", 
+						slave_info->sensor_name, s_ctrl->sensordata->slave_info->cam_id_info->cam_vendor_id, s_ctrl->vendor_otp_info.vendor_id);
+					goto camera_power_down;
+				}
+			}
+		}
+	}
+	else
+	{
+		pr_err("%s have no otp drivers", slave_info->sensor_name);
+	}
 	pr_err("%s probe succeeded", slave_info->sensor_name);
+	if (CAMERA_0 == slave_info->camera_id){
+		rc = app_info_set("camera_main", slave_info->sensor_name);
+	}
+	else if (CAMERA_2 == slave_info->camera_id){
+		rc = app_info_set("camera_slave", slave_info->sensor_name);
+	}
+	else{
+		pr_err("%s app_info_set id err", slave_info->sensor_name);
+	}
+#ifdef CONFIG_HUAWEI_HW_DEV_DCT
+	if(CAMERA_0 == slave_info->camera_id) //detet main senor or sub sensor
+	{
+		set_hw_dev_flag(DEV_I2C_CAMERA_MAIN);   //set sensor flag
+	}
+	else if (CAMERA_2 == slave_info->camera_id)       //sub sensor
+	{
+		set_hw_dev_flag(DEV_I2C_CAMERA_SLAVE);  //set sensor flag
+	}
+	else
+	{
+		pr_err("%s set_hw_dev_flag id err", slave_info->sensor_name);
+	}
+#endif
 
 	/*
 	  Set probe succeeded flag to 1 so that no other camera shall
@@ -958,6 +1169,10 @@ CSID_TG:
 
 camera_power_down:
 	s_ctrl->func_tbl->sensor_power_down(s_ctrl);
+
+free_cam_id_info:
+	kfree(cam_id_info);
+
 free_camera_info:
 	kfree(camera_info);
 free_slave_info:
@@ -1073,6 +1288,10 @@ static int32_t msm_sensor_driver_get_dt_data(struct msm_sensor_ctrl_t *s_ctrl)
 	CDBG("%s qcom,mclk-23880000 = %d\n", __func__,
 		s_ctrl->set_mclk_23880000);
 
+    s_ctrl->product_name = NULL;
+    of_property_read_string(of_node, "qcom,product-name",&s_ctrl->product_name);
+	pr_info("%s product_name = %s\n", __func__, s_ctrl->product_name);
+
 	return rc;
 
 FREE_VREG_DATA:
@@ -1157,6 +1376,8 @@ static int32_t msm_sensor_driver_platform_probe(struct platform_device *pdev)
 	int32_t rc = 0;
 	struct msm_sensor_ctrl_t *s_ctrl = NULL;
 
+    pr_info("%s: E\n",__func__);
+
 	/* Create sensor control structure */
 	s_ctrl = kzalloc(sizeof(*s_ctrl), GFP_KERNEL);
 	if (!s_ctrl)
@@ -1192,9 +1413,14 @@ static int32_t msm_sensor_driver_platform_probe(struct platform_device *pdev)
 
 	/* Fill device in power info */
 	s_ctrl->sensordata->power_info.dev = &pdev->dev;
+    pr_info("%s: X id:%d rc=%d\n",__func__,pdev->id,rc);
 	return rc;
 FREE_S_CTRL:
 	kfree(s_ctrl);
+
+	/* optimize camera print mipi packet and frame count log*/
+	s_ctrl = NULL;
+
 	return rc;
 }
 
@@ -1307,6 +1533,291 @@ static void __exit msm_sensor_driver_exit(void)
 	platform_driver_unregister(&msm_sensor_platform_driver);
 	i2c_del_driver(&msm_sensor_driver_i2c);
 	return;
+}
+
+static int pt_set_camera_power_gpio(uint16_t gpio, char *lable, int action_value){
+    int rc = 0;
+
+    rc = gpio_request_one(gpio, GPIOF_DIR_OUT,lable);
+    if (rc < 0) {
+        pr_err("%s: gpio request error\n", __func__);
+        return -1;
+    }
+    udelay(10);
+    gpio_set_value_cansleep(gpio, action_value);
+
+    udelay(10);
+    gpio_free(gpio);
+    return 0;
+}
+
+static int pt_set_camera_power_verg(struct msm_camera_power_ctrl_t *power_info,
+    int action_value, char * verg_name){
+
+    int i = 0;
+    struct msm_sensor_power_setting *power_setting = NULL;
+
+    if(!power_info || !verg_name){
+        pr_err("%s: power_info is NULL\n", __func__);
+        return -1;
+    }
+
+    for(i = 0; i < power_info->power_setting_size; i++){
+        power_setting = &power_info->power_setting[i];
+
+        pr_info("%s: seq_type=%d seq_val=%d\n",__func__,power_setting->seq_type,
+            power_setting->seq_val);
+
+        if (power_setting->seq_val == INVALID_VREG) {
+            pr_err("power_setting->seq_val is INVALID_VREG \n");
+            continue;
+        }
+        if(power_setting->seq_type == SENSOR_VREG &&
+            !strcmp(power_info->cam_vreg[power_setting->seq_val].reg_name, verg_name)){
+            msm_camera_config_single_vreg(power_info->dev,
+                                    &power_info->cam_vreg[power_setting->seq_val],
+                                    (struct regulator **)&power_setting->data[0], action_value);
+            pr_info("%s: %s action_value=%d\n",__func__,power_info->cam_vreg[power_setting->seq_val].reg_name,
+                action_value);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int pt_test_set_camera_power(struct msm_camera_power_ctrl_t *power_info, PT_camera_power_one_t *p_camera_power,
+    int pt_index, int action)
+{
+    int i = 0;
+    int rc = 0;
+    enum msm_sensor_power_seq_gpio_t gpio_ctrl_enum = SENSOR_GPIO_MAX;
+    enum PT_CAMERA_TYPE power_type = PT_POWER_TYPE_MAX;
+
+    power_type = (enum PT_CAMERA_TYPE)pt_index;
+
+    //check vergs
+    for(i=0; i<p_camera_power->camera_power_vergs_num; i++)
+    {
+        if(p_camera_power->camera_power_verg[i].pt_type != power_type)
+            continue;
+
+        pr_info("verg[%d] = %s pt_type=%d\n",i,p_camera_power->camera_power_verg[i].verg_name,
+            p_camera_power->camera_power_verg[i].pt_type);
+
+        rc = pt_set_camera_power_verg(power_info,
+            action, p_camera_power->camera_power_verg[i].verg_name);
+
+        if(rc){
+             pr_err("%s: pt_set_camera_power_verg fail rc = %d\n",__func__, rc);
+        }
+
+        return rc;
+    }
+
+    //check gpios
+    for(i=0; i<p_camera_power->camera_power_gpio_num; i++)
+    {
+        if(p_camera_power->camera_power_gpios[i].pt_type != power_type)
+            continue;
+
+        gpio_ctrl_enum = p_camera_power->camera_power_gpios[i].gpio_enum;
+        if(SENSOR_GPIO_MAX <= gpio_ctrl_enum)
+        {
+            pr_err("%s: gpio enum invalid\n",__func__);
+            continue;
+        }
+
+        if(power_info->gpio_conf->gpio_num_info->valid[gpio_ctrl_enum] <= 0)
+        {
+            pr_err("%s: gpio enum %d is invalid\n",__func__,gpio_ctrl_enum);
+            continue;
+        }
+
+        pr_info("gpio[%s] = %d pt_type=%d\n",p_camera_power->camera_power_gpios[i].lable,
+                power_info->gpio_conf->gpio_num_info->gpio_num[gpio_ctrl_enum],
+                p_camera_power->camera_power_gpios[i].pt_type);
+
+        rc = pt_set_camera_power_gpio(power_info->gpio_conf->gpio_num_info->gpio_num[gpio_ctrl_enum],
+                p_camera_power->camera_power_gpios[i].lable,action);
+        if(rc){
+            pr_err("%s: pt_set_camera_power_gpio fail rc = %d\n",__func__, rc);
+        }
+
+        return rc;
+    }
+
+    return rc;
+}
+
+/*bit0: 1->power up, 0->power off*/
+/********for milan**************/
+/*main camera power*/
+/*bit1: DVDD£ºL2*/
+/*bit2: AF_AVDD£ºL17*/
+/*bit3: AVDD£ºL22*/
+/*bit4: VREG_DOVDD_1P8£ºGPIO134*/
+
+/*slave camera power*/
+/*bit5: DVDD£ºL23*/
+/*bit6: AVDD£ºGPIO128*/
+/*bit7: VREG_DOVDD_1P8£ºGPIO134*/
+int ctrl_camera_power_status(int pt_action_value)
+{
+    struct msm_sensor_ctrl_t  *s_ctrl_all[2] = {0};
+    struct msm_sensor_ctrl_t  *s_ctrl = NULL;
+	struct msm_camera_power_ctrl_t *power_info = NULL;
+    int product_size = 0;
+    int power_ctrl_index = -1;
+    int i = 0, rc = 0;
+    int action = 0;
+    int camera_pos = 0;
+
+    action = PT_ACTION_VALUE(pt_action_value);
+
+    //find sctrl
+    for(i=0; i<MAX_CAMERAS; i++)
+    {
+        if(!g_sctrl[i])
+            continue;
+
+        if(g_sctrl[i]->sensordata && g_sctrl[i]->sensordata->sensor_info)
+        {
+            if(g_sctrl[i]->sensordata->sensor_info->position == 0)
+                s_ctrl_all[0] = g_sctrl[i];
+            else if(g_sctrl[i]->sensordata->sensor_info->position == 1)
+                s_ctrl_all[1] = g_sctrl[i];
+            pr_info("%s: find camera pos=%d\n",__func__,g_sctrl[i]->sensordata->sensor_info->position);
+        }
+
+    }
+
+    //check Main camera power
+    s_ctrl = s_ctrl_all[0];
+    camera_pos = 0; //MAIN_CAMERA_B
+    if(!s_ctrl)
+    {
+        pr_err("%s: can't find s_ctrl camera_pos=%d\n",__func__,camera_pos);
+        return -1;
+    }
+    power_info = &s_ctrl->sensordata->power_info;
+
+    //match product
+    product_size = ARRAY_SIZE(camera_power_pt_ctrl);
+    for(i=0; i<product_size; i++)
+    {
+        if(!strcmp(s_ctrl->product_name, camera_power_pt_ctrl[i].product_name))
+        {
+            power_ctrl_index = i;
+            break;
+        }
+    }
+        
+    if(power_ctrl_index < 0)
+    {
+        pr_err("%s: can't find product name for camera PT test\n",__func__);
+        return 0;
+    }
+
+    if(camera_power_pt_ctrl[power_ctrl_index].PT_camera_power_one[camera_pos].test_enable)
+    {
+        for(i=MAIN_CAMERA_BIT_START; i<=MAIN_CAMERA_BIT_END; i++)
+        {
+            if(IS_BIT_TRUE(pt_action_value,i))
+            {
+                pt_test_set_camera_power(power_info,&camera_power_pt_ctrl[power_ctrl_index].PT_camera_power_one[camera_pos],
+                    i, action);
+            }
+        }
+    }
+    else
+    {
+        pr_info("%s: cam pos:%d don't enable PT test\n",__func__,camera_pos);
+    }
+
+    //check slave camera power
+    s_ctrl = s_ctrl_all[1];
+    camera_pos = 1;//SLAVE_CAMERA_B;
+    if(!s_ctrl)
+    {
+        pr_err("%s: can't find s_ctrl camera_pos=%d\n",__func__,camera_pos);
+        return -1;
+    }
+    power_info = &s_ctrl->sensordata->power_info;
+
+    if(camera_power_pt_ctrl[power_ctrl_index].PT_camera_power_one[camera_pos].test_enable)
+    {
+        for(i=SLAVE_CAMERA_BIT_START; i<=SLAVE_CAMERA_BIT_END; i++)
+        {
+            if(IS_BIT_TRUE(pt_action_value,i))
+            {
+                pt_test_set_camera_power(power_info,&camera_power_pt_ctrl[power_ctrl_index].PT_camera_power_one[camera_pos],
+                    i, action);
+            }
+        }
+    }
+    else
+    {
+        pr_info("%s: cam pos:%d don't enable PT test\n",__func__,camera_pos);
+    }
+
+    return rc;  
+}
+EXPORT_SYMBOL(ctrl_camera_power_status);
+
+bool huawei_cam_is_factory_mode(void)
+{
+    static enum run_mode_enum run_mode = RUN_MODE_INIT;
+    if(RUN_MODE_INIT == run_mode)
+    {
+        run_mode = RUN_MODE_NORMAL;
+        if(saved_command_line != NULL)
+        {
+            if(strstr(saved_command_line, "androidboot.huawei_swtype=factory") != NULL)
+            {
+                run_mode = RUN_MODE_FACTORY;
+            }
+        }
+        pr_warn("%s run mode is %d\n", __func__, run_mode); 
+    }
+    if(RUN_MODE_FACTORY == run_mode)
+    {
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+}
+EXPORT_SYMBOL(huawei_cam_is_factory_mode);
+
+int32_t msm_get_sensor_product_name(void *setting)
+{
+    int32_t i = 0, rc = 0;
+    int32_t  length = 0;
+    struct msm_sensor_ctrl_t *s_ctrl = NULL;
+    struct msm_support_product_name_info *product_name_info = (struct msm_support_product_name_info *)setting;
+    if(!product_name_info)
+    {
+        return -1;
+    }
+    for(i = 0; i<MAX_SUPPORT_SENSOR_COUNT; i++)
+    {
+        s_ctrl = g_sctrl[i];
+        if(s_ctrl == NULL)
+        {
+            break;
+        }
+        if(!s_ctrl->product_name)
+        {
+            rc = -1;
+            pr_err("%s: don't support look up product name!\n",__func__);
+            break;
+        }
+        length = strlen(s_ctrl->product_name);
+        copy_to_user(product_name_info->product_name_info[i],s_ctrl->product_name,length+1);
+        pr_info("%s: camera get product name is: %s \n",__func__,s_ctrl->product_name);
+    }
+    return rc;
 }
 
 module_init(msm_sensor_driver_init);

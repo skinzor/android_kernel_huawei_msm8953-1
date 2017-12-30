@@ -20,13 +20,16 @@
 #include "msm_cci.h"
 
 #undef CDBG
-#define CDBG(fmt, args...) pr_debug(fmt, ##args)
+#define CDBG(fmt, args...) pr_info(fmt, ##args)
+
+#define LED_CURRENT_VALUE 187 /*187ma*/
 
 DEFINE_MSM_MUTEX(msm_flash_mutex);
 
 static struct v4l2_file_operations msm_flash_v4l2_subdev_fops;
-static struct led_trigger *torch_trigger;
+static struct led_trigger *switch_trigger;
 
+struct msm_flash_ctrl_t *g_flash_ctrl;
 static const struct of_device_id msm_flash_dt_match[] = {
 	{.compatible = "qcom,camera-flash", .data = NULL},
 	{}
@@ -35,6 +38,40 @@ static const struct of_device_id msm_flash_dt_match[] = {
 static struct msm_flash_table msm_i2c_flash_table;
 static struct msm_flash_table msm_gpio_flash_table;
 static struct msm_flash_table msm_pmic_flash_table;
+
+#define TORCH_COLD_LED_DEFAULT_CURRENT 198
+#define TORCH_WARM_LED_DEFAULT_CURRENT 0
+#define FLASH_COLD_LED_DEFAULT_CURRENT 1005
+#define FLASH_WARM_LED_DEFAULT_CURRENT 405
+#define DUAL_FLASH_TRANS_LEVEL_SIZE 3
+#define SINGLE_FLASH_CURRENT_TABLE_SIZE 7
+#define FLASH_LED_SINGLE 1
+#define FLASH_LED_DUAL 2
+
+struct dual_flash_index_to_current_info{
+  uint32_t index_start;
+  uint32_t index_end;
+  int32_t flash_cold_led_current_start;
+  int32_t flash_cold_led_current_step;
+  int32_t flash_dual_led_current_sum;
+};
+
+struct single_flash_index_to_current_info{
+  int32_t flash_channel0_current;
+  int32_t flash_channel1_current;
+  int32_t flash_channel_current_sum;
+};
+
+static struct dual_flash_index_to_current_info trans_info_table[DUAL_FLASH_TRANS_LEVEL_SIZE] = {
+  {0, 48, 15, 15, 750},/*index 0  ~ 48, total cur 750mA , min cur 15mA*/
+  {49, 115, 15, 15, 1020},/*index 49 ~115, total cur 1020mA, min cur 15mA*/
+  {116 ,182 , 210, 15, 1410},/*index 116~182, total cur 1410mA, min cur 210mA*/
+};
+
+static struct single_flash_index_to_current_info
+    single_led_current_table[SINGLE_FLASH_CURRENT_TABLE_SIZE] ={
+    {45, 45, 90}, {60, 60, 120}, {75, 75, 150}, {375, 375, 750}, {600, 600, 1200}, {825, 825, 1650}, {1050, 1050, 2100},
+};
 
 static struct msm_flash_table *flash_table[] = {
 	&msm_i2c_flash_table,
@@ -57,12 +94,16 @@ static struct msm_camera_i2c_fn_t msm_sensor_cci_func_tbl = {
 void msm_torch_brightness_set(struct led_classdev *led_cdev,
 				enum led_brightness value)
 {
-	if (!torch_trigger) {
+	CDBG("Enter, value:%d\n",value);
+	if (!led_cdev->trigger) {
 		pr_err("No torch trigger found, can't set brightness\n");
 		return;
 	}
-
-	led_trigger_event(torch_trigger, value);
+	led_trigger_event(led_cdev->trigger, LED_CURRENT_VALUE);  //set MMI flash current to 187mA
+	if (0 == value)
+		led_trigger_event(switch_trigger, 0);
+	else
+		led_trigger_event(switch_trigger, 1);
 };
 
 static struct led_classdev msm_torch_led[MAX_LED_TRIGGERS] = {
@@ -98,7 +139,8 @@ static int32_t msm_torch_create_classdev(struct platform_device *pdev,
 
 	for (i = 0; i < fctrl->torch_num_sources; i++) {
 		if (fctrl->torch_trigger[i]) {
-			torch_trigger = fctrl->torch_trigger[i];
+			msm_torch_led[i].trigger = fctrl->torch_trigger[i];
+			switch_trigger = fctrl->switch_trigger;
 			CDBG("%s:%d msm_torch_brightness_set for torch %d",
 				__func__, __LINE__, i);
 			msm_torch_brightness_set(&msm_torch_led[i],
@@ -117,6 +159,242 @@ static int32_t msm_torch_create_classdev(struct platform_device *pdev,
 		}
 	}
 
+	return 0;
+};
+
+
+/** flash_index2current:
+ *    @index: dual led index
+ *    @current1: cold led current
+ *    @current2: Warm led current
+ *
+ * Translate index to led current
+ * be used for main flash mode(Flash High mode) only
+ *
+ * Return:
+ * Success - Translate ok
+ * Failure - Some value is not wrong or some other
+ **/
+
+static int32_t flash_index2current(uint32_t index, int32_t *current1, int32_t *current2)
+{
+  int32_t rc = 0;
+  uint32_t level_conut = 0;
+  uint32_t index_tmp = 0;
+  int32_t current1_tmp = 0;
+  int32_t current2_tmp = 0;
+  
+  CDBG("%s#%d\n",__func__,__LINE__);
+  for (level_conut=0; level_conut<DUAL_FLASH_TRANS_LEVEL_SIZE; ++level_conut) {
+    if ((trans_info_table[level_conut].index_start <= index)&&
+      (index<= trans_info_table[level_conut].index_end)) {
+      //trans index start from zero
+      index_tmp = index - trans_info_table[level_conut].index_start;
+      current1_tmp = trans_info_table[level_conut].flash_cold_led_current_start + 
+                            index_tmp*trans_info_table[level_conut].flash_cold_led_current_step;
+      current2_tmp = trans_info_table[level_conut].flash_dual_led_current_sum - current1_tmp;
+      pr_err("index:%d, in group:%d(%d~%d) current: %d %d\n", index, level_conut,
+          trans_info_table[level_conut].index_start,
+          trans_info_table[level_conut].index_end,
+          current1_tmp, current2_tmp);
+      break;
+    }
+  }
+  if( 3 <= level_conut) {
+    current1_tmp = FLASH_COLD_LED_DEFAULT_CURRENT;
+    current2_tmp = FLASH_WARM_LED_DEFAULT_CURRENT;	
+    pr_err("index: %d is out of range, set default current %d %d\n",
+		index, current1_tmp, current2_tmp);
+    rc = -1;
+  }
+  *current1 = current1_tmp;
+  *current2 = current2_tmp;
+  return rc;
+}
+
+
+/*********************************
+*debug for dual leds
+* 0~182:Flash    $echo x > /sys/class/leds/dual_leds/brightness
+* 187 turn on torch at defaut value
+* Another turn off
+
+*debug for single led
+* 0~6:Flash    $echo x > /sys/class/leds/dual_leds/brightness
+* 7 turn on torch at defaut value
+* Another turn off
+*********************************/
+void msm_dual_leds_brightness_set(struct led_classdev *led_cdev,
+				enum led_brightness value)
+{
+	int32_t curr = 0;
+	int32_t max_current = 0;
+	int32_t i = 0;
+	int32_t flash_current[MAX_LED_TRIGGERS] = {0};
+
+	CDBG("Enter value:%d, flash_hw_cnt=%d\n",value, g_flash_ctrl->flash_hw_cnt);
+       if( FLASH_LED_DUAL == g_flash_ctrl->flash_hw_cnt){
+	    if(value < 183) {
+		flash_index2current(value, &flash_current[0], &flash_current[1]);
+		/* Turn off torch triggers */
+		for (i = 0; i < g_flash_ctrl->torch_num_sources; i++)
+			if (g_flash_ctrl->torch_trigger[i])
+				led_trigger_event(g_flash_ctrl->torch_trigger[i], 0);
+
+		/* Turn on flash triggers */
+		for (i = 0; i < g_flash_ctrl->flash_num_sources; i++) {
+			if (g_flash_ctrl->flash_trigger[i]) {
+				max_current = g_flash_ctrl->flash_max_current[i];
+				if (flash_current[i] >= 0 &&flash_current[i] <= max_current) {
+					curr = flash_current[i];
+				} else {
+					curr = g_flash_ctrl->flash_op_current[i];
+					pr_debug("LED flash_current[%d] clamped %d\n",
+						i, curr);
+				}
+				CDBG("high_flash_current[%d] = %d\n", i, curr);
+				led_trigger_event(g_flash_ctrl->flash_trigger[i],
+					curr);
+			}
+		}
+		if (g_flash_ctrl->switch_trigger)
+				led_trigger_event(g_flash_ctrl->switch_trigger, 1);
+
+	    }
+	    else if ( 187 == value) {
+		CDBG("%s#%d\n",__func__,__LINE__);
+		flash_current[0] = TORCH_COLD_LED_DEFAULT_CURRENT;
+		flash_current[1] = TORCH_WARM_LED_DEFAULT_CURRENT;
+		/* Turn off flash triggers */
+		for (i = 0; i < g_flash_ctrl->flash_num_sources; i++)
+			if (g_flash_ctrl->flash_trigger[i])
+				led_trigger_event(g_flash_ctrl->flash_trigger[i], 0);
+
+		/* Turn on flash triggers */
+		for (i = 0; i < g_flash_ctrl->torch_num_sources; i++) {
+			if (g_flash_ctrl->torch_trigger[i]) {
+				max_current = g_flash_ctrl->torch_max_current[i];
+				if (flash_current[i] >= 0 &&flash_current[i] <=max_current) {
+					curr = flash_current[i];
+				} else {
+					curr = g_flash_ctrl->torch_op_current[i];
+					pr_debug("LED current clamped to %d\n",
+						curr);
+				}
+				CDBG("low_flash_current[%d] = %d", i, curr);
+				led_trigger_event(g_flash_ctrl->torch_trigger[i],
+					curr);
+			}
+		}
+		if (g_flash_ctrl->switch_trigger)
+				led_trigger_event(g_flash_ctrl->switch_trigger, 1);
+	    }
+	    else { //trun off flash
+		CDBG("%s#%d\n",__func__,__LINE__);
+		for (i = 0; i < g_flash_ctrl->flash_num_sources; i++)
+			if (g_flash_ctrl->flash_trigger[i])
+				led_trigger_event(g_flash_ctrl->flash_trigger[i], 0);
+
+		for (i = 0; i < g_flash_ctrl->torch_num_sources; i++)
+			if (g_flash_ctrl->torch_trigger[i])
+				led_trigger_event(g_flash_ctrl->torch_trigger[i], 0);
+		if (g_flash_ctrl->switch_trigger)
+				led_trigger_event(g_flash_ctrl->switch_trigger, 0);
+	    }
+    }
+    else if(FLASH_LED_SINGLE == g_flash_ctrl->flash_hw_cnt){
+	    if(value < 7) {
+		flash_current[0] = single_led_current_table[value].flash_channel0_current;
+             flash_current[1] = single_led_current_table[value].flash_channel1_current;
+
+		/* Turn off torch triggers */
+		for (i = 0; i < g_flash_ctrl->torch_num_sources; i++)
+			if (g_flash_ctrl->torch_trigger[i])
+				led_trigger_event(g_flash_ctrl->torch_trigger[i], 0);
+
+		/* Turn on flash triggers */
+		for (i = 0; i < g_flash_ctrl->flash_num_sources; i++) {
+			if (g_flash_ctrl->flash_trigger[i]) {
+				max_current = g_flash_ctrl->flash_max_current[i];
+				if (flash_current[i] >= 0 &&flash_current[i] <= max_current) {
+					curr = flash_current[i];
+				} else {
+					curr = g_flash_ctrl->flash_op_current[i];
+					pr_debug("LED flash_current[%d] clamped %d\n",
+						i, curr);
+				}
+				CDBG("high_flash_current[%d] = %d\n", i, curr);
+				led_trigger_event(g_flash_ctrl->flash_trigger[i],
+					curr);
+			}
+		}
+		if (g_flash_ctrl->switch_trigger)
+				led_trigger_event(g_flash_ctrl->switch_trigger, 1);
+
+	    }
+	    else if (7 == value) {
+		CDBG("%s#%d\n",__func__,__LINE__);
+		flash_current[0] = TORCH_COLD_LED_DEFAULT_CURRENT;
+		flash_current[1] = TORCH_WARM_LED_DEFAULT_CURRENT;
+		/* Turn off flash triggers */
+		for (i = 0; i < g_flash_ctrl->flash_num_sources; i++)
+			if (g_flash_ctrl->flash_trigger[i])
+				led_trigger_event(g_flash_ctrl->flash_trigger[i], 0);
+
+		/* Turn on flash triggers */
+		for (i = 0; i < g_flash_ctrl->torch_num_sources; i++) {
+			if (g_flash_ctrl->torch_trigger[i]) {
+				max_current = g_flash_ctrl->torch_max_current[i];
+				if (flash_current[i] >= 0 &&flash_current[i] <=max_current) {
+					curr = flash_current[i];
+				} else {
+					curr = g_flash_ctrl->torch_op_current[i];
+					pr_debug("LED current clamped to %d\n",
+						curr);
+				}
+				CDBG("low_flash_current[%d] = %d", i, curr);
+				led_trigger_event(g_flash_ctrl->torch_trigger[i],
+					curr);
+			}
+		}
+		if (g_flash_ctrl->switch_trigger)
+				led_trigger_event(g_flash_ctrl->switch_trigger, 1);
+	    }
+	    else { //trun off flash
+		CDBG("%s#%d\n",__func__,__LINE__);
+		for (i = 0; i < g_flash_ctrl->flash_num_sources; i++)
+			if (g_flash_ctrl->flash_trigger[i])
+				led_trigger_event(g_flash_ctrl->flash_trigger[i], 0);
+
+		for (i = 0; i < g_flash_ctrl->torch_num_sources; i++)
+			if (g_flash_ctrl->torch_trigger[i])
+				led_trigger_event(g_flash_ctrl->torch_trigger[i], 0);
+		if (g_flash_ctrl->switch_trigger)
+				led_trigger_event(g_flash_ctrl->switch_trigger, 0);
+	    }
+    }
+    else
+        pr_err("Led hw count error : %d\n", g_flash_ctrl->flash_hw_cnt);
+};
+
+static struct led_classdev msm_dual_leds = {
+	.name                   = "dual_leds",
+	.brightness_set = msm_dual_leds_brightness_set,
+	.brightness             = LED_OFF,
+};
+
+static int32_t msm_dual_leds_create_classdev(struct device *dev ,
+	                                            void *data)
+{
+	int rc;
+	
+	CDBG("Enter\n");
+	rc = led_classdev_register(dev, &msm_dual_leds);
+	if (rc)
+	{
+		pr_err("Failed to register dual_leds dev. rc = %d\n", rc);
+		return rc;
+	}
 	return 0;
 };
 
@@ -437,6 +715,8 @@ static int32_t msm_flash_init(
 		return 0;
 	}
 
+      flash_data->flash_hw_cnt = flash_ctrl->flash_hw_cnt;
+
 	if (flash_data->cfg.flash_init_info->flash_driver_type ==
 		FLASH_DRIVER_DEFAULT) {
 		flash_driver_type = flash_ctrl->flash_driver_type;
@@ -536,6 +816,7 @@ static int32_t msm_flash_high(
 	int32_t max_current = 0;
 	int32_t i = 0;
 
+	CDBG("Enter");
 	/* Turn off torch triggers */
 	for (i = 0; i < flash_ctrl->torch_num_sources; i++)
 		if (flash_ctrl->torch_trigger[i])
@@ -546,7 +827,7 @@ static int32_t msm_flash_high(
 		if (flash_ctrl->flash_trigger[i]) {
 			max_current = flash_ctrl->flash_max_current[i];
 			if (flash_data->flash_current[i] >= 0 &&
-				flash_data->flash_current[i] <
+				flash_data->flash_current[i] <=
 				max_current) {
 				curr = flash_data->flash_current[i];
 			} else {
@@ -568,6 +849,7 @@ static int32_t msm_flash_release(
 	struct msm_flash_ctrl_t *flash_ctrl)
 {
 	int32_t rc = 0;
+	CDBG("Enter\n");
 	if (flash_ctrl->flash_state == MSM_CAMERA_FLASH_RELEASE) {
 		pr_err("%s:%d Invalid flash state = %d",
 			__func__, __LINE__, flash_ctrl->flash_state);
@@ -690,6 +972,12 @@ static int32_t msm_flash_get_pmic_source_info(
 	struct device_node *flash_src_node = NULL;
 	struct device_node *torch_src_node = NULL;
 	struct device_node *switch_src_node = NULL;
+
+	rc = of_property_read_u32(of_node, "qcom,flash-hw-count", &fctrl->flash_hw_cnt);
+	CDBG("%s qcom,flash-hw-count %d, rc %d\n", __func__, fctrl->flash_hw_cnt, rc);
+	if (rc < 0) {
+        pr_err("qcom,flash-hw-count read failed\n");
+	}
 
 	switch_src_node = of_parse_phandle(of_node, "qcom,switch-source", 0);
 	if (!switch_src_node) {
@@ -923,7 +1211,7 @@ static int32_t msm_flash_get_dt_data(struct device_node *of_node,
 	}
 
 	if (fctrl->flash_driver_type == FLASH_DRIVER_DEFAULT)
-		fctrl->flash_driver_type = FLASH_DRIVER_GPIO;
+		fctrl->flash_driver_type = FLASH_DRIVER_PMIC;
 	CDBG("%s:%d fctrl->flash_driver_type = %d", __func__, __LINE__,
 		fctrl->flash_driver_type);
 
@@ -1001,6 +1289,8 @@ static long msm_flash_subdev_do_ioctl(
 		u32->flash_current[i] = flash_data.flash_current[i];
 		u32->flash_duration[i] = flash_data.flash_duration[i];
 	}
+
+       u32->flash_hw_cnt = flash_data.flash_hw_cnt;
 	CDBG("Exit");
 	return rc;
 }
@@ -1084,6 +1374,8 @@ static int32_t msm_flash_platform_probe(struct platform_device *pdev)
 
 	if (flash_ctrl->flash_driver_type == FLASH_DRIVER_PMIC)
 		rc = msm_torch_create_classdev(pdev, flash_ctrl);
+	rc = msm_dual_leds_create_classdev(&pdev->dev,flash_ctrl);
+	g_flash_ctrl = flash_ctrl;
 
 	CDBG("probe success\n");
 	return rc;

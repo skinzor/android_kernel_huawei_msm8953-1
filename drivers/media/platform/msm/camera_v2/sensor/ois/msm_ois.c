@@ -13,6 +13,7 @@
 #define pr_fmt(fmt) "%s:%d " fmt, __func__, __LINE__
 
 #include <linux/module.h>
+#include <linux/of_gpio.h>
 #include <linux/firmware.h>
 #include "msm_sd.h"
 #include "msm_ois.h"
@@ -27,11 +28,19 @@ DEFINE_MSM_MUTEX(msm_ois_mutex);
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
 #endif
 
+#define MAX_POLL_COUNT 100
+
 static struct v4l2_file_operations msm_ois_v4l2_subdev_fops;
 static int32_t msm_ois_power_up(struct msm_ois_ctrl_t *o_ctrl);
 static int32_t msm_ois_power_down(struct msm_ois_ctrl_t *o_ctrl);
 
 static struct i2c_driver msm_ois_i2c_driver;
+enum reg_size_type{
+	REG_DATA_SIZE_BYTE = 1,
+	REG_DATA_SIZE_WORD = 2,
+	REG_DATA_SIZE_DWORD = 4,
+};
+
 
 static int32_t msm_ois_download(struct msm_ois_ctrl_t *o_ctrl)
 {
@@ -151,16 +160,99 @@ static int32_t msm_ois_data_config(struct msm_ois_ctrl_t *o_ctrl,
 	return rc;
 }
 
-static int32_t msm_ois_write_settings(struct msm_ois_ctrl_t *o_ctrl,
-	uint16_t size, struct reg_settings_ois_t *settings)
+/*
+ois register operation: read,write,poll
+*/
+static int32_t msm_ois_reg_settings(struct msm_ois_ctrl_t *o_ctrl,
+	uint16_t size, struct reg_settings_ois_t *settings, struct reg_settings_ois_t *user_settings)
 {
 	int32_t rc = -EFAULT;
 	int32_t i = 0;
-	struct msm_camera_i2c_seq_reg_array *reg_setting;
+	struct msm_camera_i2c_seq_reg_array *reg_setting = NULL;
 	CDBG("Enter\n");
+
+	reg_setting = kzalloc(sizeof(struct msm_camera_i2c_seq_reg_array), GFP_KERNEL);
+	if (!reg_setting){
+		pr_err("reg_setting kzalloc fail \n");
+		return -ENOMEM;
+	}
 
 	for (i = 0; i < size; i++) {
 		switch (settings[i].i2c_operation) {
+		case MSM_OIS_READ: {
+			memset(reg_setting, 0, sizeof(struct msm_camera_i2c_seq_reg_array));
+			reg_setting->reg_addr = settings[i].reg_addr;
+
+			switch (settings[i].data_type) {
+			case MSM_CAMERA_I2C_BYTE_DATA:
+				reg_setting->reg_data_size = REG_DATA_SIZE_BYTE;
+				rc = o_ctrl->i2c_client.i2c_func_tbl->i2c_read_seq(
+					&o_ctrl->i2c_client,
+					reg_setting->reg_addr,
+					reg_setting->reg_data,
+					reg_setting->reg_data_size);
+				settings[i].reg_data = reg_setting->reg_data[0];
+				rc  = copy_to_user((void __user *)&user_settings[i].reg_data, &settings[i].reg_data, sizeof(settings[i].reg_data));
+				if(rc)
+				{
+				    pr_err("cannot copy error rc=%d \n", rc);
+				}
+				break;
+			case MSM_CAMERA_I2C_WORD_DATA:
+				reg_setting->reg_data_size = REG_DATA_SIZE_WORD;
+				rc = o_ctrl->i2c_client.i2c_func_tbl->i2c_read_seq(
+					&o_ctrl->i2c_client,
+					reg_setting->reg_addr,
+					reg_setting->reg_data,
+					reg_setting->reg_data_size);
+				settings[i].reg_data = reg_setting->reg_data[0] <<8|reg_setting->reg_data[1];
+				rc  = copy_to_user((void __user *)&user_settings[i].reg_data, &settings[i].reg_data, sizeof(settings[i].reg_data));
+				if(rc)
+				{
+				    pr_err("cannot copy error rc=%d \n", rc);
+				}
+				break;
+			case MSM_CAMERA_I2C_DWORD_DATA:
+				reg_setting->reg_data_size = REG_DATA_SIZE_DWORD;
+				rc = o_ctrl->i2c_client.i2c_func_tbl->i2c_read_seq(
+					&o_ctrl->i2c_client,
+					reg_setting->reg_addr,
+					reg_setting->reg_data,
+					reg_setting->reg_data_size);
+				settings[i].reg_data = (reg_setting->reg_data[0] << 24)|(reg_setting->reg_data[1] << 16)
+					|(reg_setting->reg_data[2] << 8) |(reg_setting->reg_data[3]);
+				rc  = copy_to_user((void __user *)&user_settings[i].reg_data, &settings[i].reg_data, sizeof(settings[i].reg_data));
+				if(rc)
+				{
+				    pr_err("cannot copy error rc=%d \n", rc);
+				}
+				break;
+			case MSM_CAMERA_I2C_SEQ:
+				reg_setting->reg_data_size = settings[i].seq_size;
+				rc = o_ctrl->i2c_client.i2c_func_tbl->i2c_read_seq(
+					&o_ctrl->i2c_client,
+					reg_setting->reg_addr,
+					reg_setting->reg_data,
+					reg_setting->reg_data_size);
+				rc  = copy_to_user((void __user *)&user_settings[i].reg_seq, &reg_setting->reg_data, sizeof(char)*settings[i].seq_size);
+				if(rc)
+				{
+				    pr_err("cannot copy error rc=%d \n", rc);
+				}
+				break;
+			default:
+				pr_err("Unsupport data type: %d\n",
+					settings[i].data_type);
+				break;
+			}
+			if (settings[i].delay > 20)
+				msleep(settings[i].delay);
+			else if (0 != settings[i].delay)
+				usleep_range(settings[i].delay * 1000,
+					(settings[i].delay * 1000) + 1000);
+		}
+			break;
+
 		case MSM_OIS_WRITE: {
 			switch (settings[i].data_type) {
 			case MSM_CAMERA_I2C_BYTE_DATA:
@@ -172,12 +264,7 @@ static int32_t msm_ois_write_settings(struct msm_ois_ctrl_t *o_ctrl,
 					settings[i].data_type);
 				break;
 			case MSM_CAMERA_I2C_DWORD_DATA:
-			reg_setting =
-			kzalloc(sizeof(struct msm_camera_i2c_seq_reg_array),
-				GFP_KERNEL);
-				if (!reg_setting)
-					return -ENOMEM;
-
+				memset(reg_setting, 0, sizeof(struct msm_camera_i2c_seq_reg_array));
 				reg_setting->reg_addr = settings[i].reg_addr;
 				reg_setting->reg_data[0] = (uint8_t)
 					((settings[i].reg_data &
@@ -190,18 +277,23 @@ static int32_t msm_ois_write_settings(struct msm_ois_ctrl_t *o_ctrl,
 					0x0000FF00) >> 8);
 				reg_setting->reg_data[3] = (uint8_t)
 					(settings[i].reg_data & 0x000000FF);
-				reg_setting->reg_data_size = 4;
+				reg_setting->reg_data_size = REG_DATA_SIZE_DWORD;
 				rc = o_ctrl->i2c_client.i2c_func_tbl->
 					i2c_write_seq(&o_ctrl->i2c_client,
 					reg_setting->reg_addr,
 					reg_setting->reg_data,
 					reg_setting->reg_data_size);
-				kfree(reg_setting);
-				reg_setting = NULL;
-				if (rc < 0)
-					return rc;
 				break;
-
+			case MSM_CAMERA_I2C_SEQ:
+				reg_setting->reg_addr = settings[i].reg_addr;
+				memcpy(reg_setting->reg_data, settings[i].reg_seq, settings[i].seq_size);
+				reg_setting->reg_data_size = settings[i].seq_size;
+				rc = o_ctrl->i2c_client.i2c_func_tbl->
+					i2c_write_seq(&o_ctrl->i2c_client,
+					reg_setting->reg_addr,
+					reg_setting->reg_data,
+					reg_setting->reg_data_size);
+				break;
 			default:
 				pr_err("Unsupport data type: %d\n",
 					settings[i].data_type);
@@ -216,10 +308,14 @@ static int32_t msm_ois_write_settings(struct msm_ois_ctrl_t *o_ctrl,
 			break;
 
 		case MSM_OIS_POLL: {
+			int32_t poll_count = 0;
+			uint32_t value = 0;
+			uint32_t user_count = 0;
+			uint32_t user_sleep = 0;
+
 			switch (settings[i].data_type) {
 			case MSM_CAMERA_I2C_BYTE_DATA:
 			case MSM_CAMERA_I2C_WORD_DATA:
-
 				rc = o_ctrl->i2c_client.i2c_func_tbl
 					->i2c_poll(&o_ctrl->i2c_client,
 					settings[i].reg_addr,
@@ -227,7 +323,46 @@ static int32_t msm_ois_write_settings(struct msm_ois_ctrl_t *o_ctrl,
 					settings[i].data_type,
 					settings[i].delay);
 				break;
+			case MSM_CAMERA_I2C_DWORD_DATA:
+				user_sleep = 5;/*need delay 5ms to read seq*/
+				user_count = settings[i].delay/user_sleep;/*retry times*/
+				memset(reg_setting, 0, sizeof(struct msm_camera_i2c_seq_reg_array));
+				do {
+					reg_setting->reg_addr = settings[i].reg_addr;
+					reg_setting->reg_data_size = REG_DATA_SIZE_DWORD;
+					rc = o_ctrl->i2c_client.i2c_func_tbl->i2c_read_seq(
+					&o_ctrl->i2c_client,
+					reg_setting->reg_addr,
+					reg_setting->reg_data,
+					reg_setting->reg_data_size);
+					value = (reg_setting->reg_data[0] << 24)|(reg_setting->reg_data[1] << 16)
+					|(reg_setting->reg_data[2] << 8) |(reg_setting->reg_data[3]);
+					CDBG("MSM_OIS_POLL value=0x%08x\n", value);
+					CDBG("user_count=%d, MAX_POLL_COUNT=%d \n", user_count, MAX_POLL_COUNT);
+					user_count = user_count > MAX_POLL_COUNT?MAX_POLL_COUNT:user_count;
+					if (poll_count++ > user_count) {
+						pr_err("MSM_OIS_POLL failed poll_count=%d", poll_count);
+						break;
+					}
+					if(rc !=0 ){
+						pr_err("MSM_OIS_POLL failed rc =%d", rc );
+						break;
+					}
+					if(value != settings[i].reg_data){
+						pr_err("value=%d,  settings[i].reg_data=%d", value,  settings[i].reg_data);
+						usleep_range(user_sleep * 1000,(user_sleep * 1000) + 1000);
+					}
 
+				}while (value != settings[i].reg_data) ;
+
+				if(value == settings[i].reg_data){
+					pr_err("MSM_OIS_POLL success reg_addr=0x%04x, reg_data=0x%08x\n", reg_setting->reg_addr, value);
+				}
+				else {
+					pr_err("MSM_OIS_POLL fail reg_addr=0x%04x, reg_value=0x%08x,but we hope is 0x%08x\n", reg_setting->reg_addr, value, settings[i].reg_data);
+					rc = -1;/*poll fail need return -1*/
+				}
+				break;
 			default:
 				pr_err("Unsupport data type: %d\n",
 					settings[i].data_type);
@@ -236,11 +371,17 @@ static int32_t msm_ois_write_settings(struct msm_ois_ctrl_t *o_ctrl,
 		}
 		}
 
-		if (rc < 0)
+		if (rc < 0){
+			pr_err("failed \n");
 			break;
+		}
 	}
 
 	CDBG("Exit\n");
+	if(reg_setting){
+		kfree(reg_setting);
+		reg_setting = NULL;
+	}
 	return rc;
 }
 
@@ -256,7 +397,7 @@ static int32_t msm_ois_vreg_control(struct msm_ois_ctrl_t *o_ctrl,
 		return 0;
 
 	if (cnt >= MSM_OIS_MAX_VREGS) {
-		pr_err("%s failed %d cnt %d\n", __func__, __LINE__, cnt);
+		pr_err("failed cnt %d\n", cnt);
 		return -EINVAL;
 	}
 
@@ -279,7 +420,7 @@ static int32_t msm_ois_power_down(struct msm_ois_ctrl_t *o_ctrl)
 
 		rc = msm_ois_vreg_control(o_ctrl, 0);
 		if (rc < 0) {
-			pr_err("%s failed %d\n", __func__, __LINE__);
+			pr_err("failed \n");
 			return rc;
 		}
 
@@ -344,6 +485,45 @@ static int msm_ois_init(struct msm_ois_ctrl_t *o_ctrl)
 	return rc;
 }
 
+/* The write protect pin control for ois firmware update function */
+static int32_t msm_ois_flash_wp_enable(struct msm_ois_ctrl_t *o_ctrl,
+	struct msm_ois_set_info_t *set_info)
+{
+	int32_t rc = 0;
+	int32_t wp_status = -1;
+	uint16_t gpio;
+
+	CDBG("Enter\n");
+	if(!o_ctrl || !set_info){
+		pr_err("NULL pointer error: o_ctrl=%p, set_info=%p", o_ctrl, set_info);
+		return -1;
+	}
+
+	if(!o_ctrl->gpio_num_info.valid[SENSOR_GPIO_FLASH_WP]){
+		pr_err("SENSOR_GPIO_FLASH_WP gpio is invalid!");
+		return -1;
+	}
+
+	gpio=o_ctrl->gpio_num_info.gpio_num[SENSOR_GPIO_FLASH_WP];
+	#if 1
+	pr_err("wp_status = %d", wp_status);
+	#else
+	wp_status = gpio_get_value(gpio);
+	pr_err("wp_status = %d before set", wp_status);
+
+	if(set_info->ois_params.flash_wp_enable)
+		gpio_set_value(gpio, 1);
+	else
+		gpio_set_value(gpio, 0);
+
+	wp_status = gpio_get_value(gpio);
+	pr_err("wp_status = %d after set", wp_status);
+	#endif
+
+	CDBG("Exit\n");
+	return rc;
+}
+
 static int32_t msm_ois_control(struct msm_ois_ctrl_t *o_ctrl,
 	struct msm_ois_set_info_t *set_info)
 {
@@ -387,9 +567,9 @@ static int32_t msm_ois_control(struct msm_ois_ctrl_t *o_ctrl,
 			return -EFAULT;
 		}
 
-		rc = msm_ois_write_settings(o_ctrl,
+		rc = msm_ois_reg_settings(o_ctrl,
 			set_info->ois_params.setting_size,
-			settings);
+			settings, set_info->ois_params.settings);
 		kfree(settings);
 		if (rc < 0) {
 			pr_err("Error\n");
@@ -402,7 +582,6 @@ static int32_t msm_ois_control(struct msm_ois_ctrl_t *o_ctrl,
 	return rc;
 }
 
-
 static int32_t msm_ois_config(struct msm_ois_ctrl_t *o_ctrl,
 	void __user *argp)
 {
@@ -411,7 +590,7 @@ static int32_t msm_ois_config(struct msm_ois_ctrl_t *o_ctrl,
 	int32_t rc = 0;
 	mutex_lock(o_ctrl->ois_mutex);
 	CDBG("Enter\n");
-	CDBG("%s type %d\n", __func__, cdata->cfgtype);
+	CDBG("type %d\n", cdata->cfgtype);
 	switch (cdata->cfgtype) {
 	case CFG_OIS_INIT:
 		rc = msm_ois_init(o_ctrl);
@@ -433,6 +612,12 @@ static int32_t msm_ois_config(struct msm_ois_ctrl_t *o_ctrl,
 		if (rc < 0)
 			pr_err("Failed ois control%d\n", rc);
 		break;
+	case CFG_OIS_FLASH_WP_ENABLE:
+		rc = msm_ois_flash_wp_enable(o_ctrl, &cdata->cfg.set_info);
+		if (rc < 0)
+			pr_err("Failed CFG_OIS_FLASH_WP_ENABLE %d\n", rc);
+		break;
+
 	case CFG_OIS_I2C_WRITE_SEQ_TABLE: {
 		struct msm_camera_i2c_seq_reg_setting conf_array;
 		struct msm_camera_i2c_seq_reg_array *reg_setting = NULL;
@@ -447,13 +632,13 @@ static int32_t msm_ois_config(struct msm_ois_ctrl_t *o_ctrl,
 		if (copy_from_user(&conf_array,
 			(void *)cdata->cfg.settings,
 			sizeof(struct msm_camera_i2c_seq_reg_setting))) {
-			pr_err("%s:%d failed\n", __func__, __LINE__);
+			pr_err("failed\n");
 			rc = -EFAULT;
 			break;
 		}
 
 		if (!conf_array.size) {
-			pr_err("%s:%d failed\n", __func__, __LINE__);
+			pr_err("failed\n");
 			rc = -EFAULT;
 			break;
 		}
@@ -461,14 +646,14 @@ static int32_t msm_ois_config(struct msm_ois_ctrl_t *o_ctrl,
 			(sizeof(struct msm_camera_i2c_seq_reg_array)),
 			GFP_KERNEL);
 		if (!reg_setting) {
-			pr_err("%s:%d failed\n", __func__, __LINE__);
+			pr_err("failed\n");
 			rc = -ENOMEM;
 			break;
 		}
 		if (copy_from_user(reg_setting, (void *)conf_array.reg_setting,
 			conf_array.size *
 			sizeof(struct msm_camera_i2c_seq_reg_array))) {
-			pr_err("%s:%d failed\n", __func__, __LINE__);
+			pr_err("failed\n");
 			kfree(reg_setting);
 			rc = -EFAULT;
 			break;
@@ -621,6 +806,7 @@ static long msm_ois_subdev_ioctl(struct v4l2_subdev *sd,
 		}
 		return msm_ois_close(sd, NULL);
 	default:
+		pr_err("%s: error invalid cmd = %d, %ld, %ld, %ld \n", __func__, cmd, VIDIOC_MSM_SENSOR_GET_SUBDEV_ID, VIDIOC_MSM_OIS_CFG, MSM_SD_SHUTDOWN);
 		return -ENOIOCTLCMD;
 	}
 }
@@ -815,6 +1001,12 @@ static long msm_ois_subdev_do_ioctl(
 			ois_data.cfg.settings = &settings;
 			parg = &ois_data;
 			break;
+		case CFG_OIS_FLASH_WP_ENABLE:
+			pr_err("flash_wp_enable=%d\n", u32->cfg.set_info.ois_params.flash_wp_enable);
+			ois_data.cfg.set_info.ois_params.flash_wp_enable =
+				u32->cfg.set_info.ois_params.flash_wp_enable;
+			parg = &ois_data;
+			break;
 		default:
 			parg = &ois_data;
 			break;
@@ -838,6 +1030,12 @@ static int32_t msm_ois_platform_probe(struct platform_device *pdev)
 	struct msm_camera_cci_client *cci_client = NULL;
 	struct msm_ois_ctrl_t *msm_ois_t = NULL;
 	struct msm_ois_vreg *vreg_cfg;
+	uint16_t gpio_array_size = 0;
+	uint16_t *gpio_array = NULL;
+	int32_t val = 0;
+	int32_t i = 0;
+	struct device_node *of_node = NULL;
+
 	CDBG("Enter\n");
 
 	if (!pdev->dev.of_node) {
@@ -875,6 +1073,38 @@ static int32_t msm_ois_platform_probe(struct platform_device *pdev)
 		goto release_memory;
 	}
 
+	of_node = (&pdev->dev)->of_node;
+
+	gpio_array_size = of_gpio_count(of_node);
+	CDBG("gpio_array_size=%d\n", gpio_array_size);
+	if (gpio_array_size) {
+		gpio_array = kzalloc(sizeof(uint16_t) * gpio_array_size, GFP_KERNEL);
+		if (!gpio_array) {
+			pr_err("%s failed %d\n", __func__, __LINE__);
+			rc = -ENOMEM;
+			goto release_memory;
+		}
+		for (i = 0; i < gpio_array_size; i++) {
+			gpio_array[i] = of_get_gpio(of_node, i);
+			CDBG("%s gpio_array[%d] = %d\n", __func__, i,
+				gpio_array[i]);
+		}
+		rc = of_property_read_u32(of_node, "qcom,gpio-flash_wp", &val);
+		if (rc < 0) {
+			pr_err("%s:%dread qcom,gpio-flash_wp failed rc %d\n",
+				__func__, __LINE__, rc);
+		}
+		else{
+			msm_ois_t->gpio_num_info.gpio_num[SENSOR_GPIO_FLASH_WP] = gpio_array[val];
+			msm_ois_t->gpio_num_info.valid[SENSOR_GPIO_FLASH_WP] = 1;
+
+			CDBG("%s qcom,gpio-flash_wp %d index =%d \n", __func__,
+				msm_ois_t->gpio_num_info.gpio_num[SENSOR_GPIO_FLASH_WP], val);
+		}
+		if(gpio_array)
+			kfree(gpio_array);
+	}
+
 	if (of_find_property((&pdev->dev)->of_node,
 			"qcom,cam-vreg-name", NULL)) {
 		vreg_cfg = &msm_ois_t->vreg_cfg;
@@ -897,8 +1127,12 @@ static int32_t msm_ois_platform_probe(struct platform_device *pdev)
 		if (rc < 0) {
 			pr_err("ERR:%s: Error in reading OIS pinctrl\n",
 				__func__);
+			rc = 0;
 			msm_ois_t->cam_pinctrl_status = 0;
 		}
+		/*set ois fw wp_ctrl low*/
+		if(msm_ois_t->gpio_num_info.valid[SENSOR_GPIO_FLASH_WP])
+			gpio_set_value(msm_ois_t->gpio_num_info.gpio_num[SENSOR_GPIO_FLASH_WP], 0);
 	}
 
 	msm_ois_t->ois_v4l2_subdev_ops = &msm_ois_subdev_ops;
