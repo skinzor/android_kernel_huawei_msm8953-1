@@ -36,6 +36,15 @@
 #include "sdhci.h"
 #include "cmdq_hci.h"
 
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+#include <linux/mmc/dsm_sdcard.h>
+#endif
+
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+#include <linux/mmc/dsm_emmc.h>
+#endif
+
 #define DRIVER_NAME "sdhci"
 
 #define DBG(f, x...) \
@@ -45,6 +54,14 @@
 	defined(CONFIG_MMC_SDHCI_MODULE))
 #define SDHCI_USE_LEDS_CLASS
 #endif
+extern int mmc_debug_mask;
+module_param_named(debug_mask, mmc_debug_mask, int, S_IRUGO | S_IWUSR | S_IWGRP);
+
+#define HUAWEI_DBG(fmt, args...) \
+	do { \
+		if (mmc_debug_mask) \
+			printk(fmt, args); \
+	} while (0)
 
 #define MAX_TUNING_LOOP 40
 
@@ -55,6 +72,10 @@
 
 static unsigned int debug_quirks = 0;
 static unsigned int debug_quirks2;
+
+static struct kmem_cache *mmc_area_cachep __read_mostly;
+static struct scatterlist	*cur_sg = NULL;
+static struct scatterlist	*prev_sg = NULL;
 
 static void sdhci_finish_data(struct sdhci_host *);
 
@@ -1731,6 +1752,10 @@ static void sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 
 	host->mrq = mrq;
 
+	HUAWEI_DBG("HUAWEI %s: starting CMD%u arg %08x flags %08x\n",
+		mmc_hostname(host->mmc), mrq->cmd->opcode,
+		mrq->cmd->arg, mrq->cmd->flags);
+
 	/*
 	 * Firstly check card presence from cd-gpio.  The return could
 	 * be one of the following possibilities:
@@ -1807,7 +1832,10 @@ static void sdhci_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		else
 			sdhci_send_command(host, mrq->cmd);
 	}
-
+	HUAWEI_DBG("HUAWEI %s: req end (CMD%u): %08x %08x %08x %08x\n",
+		mmc_hostname(host->mmc), mrq->cmd->opcode,
+		mrq->cmd->resp[0], mrq->cmd->resp[1],
+		mrq->cmd->resp[2], mrq->cmd->resp[3]);
 	mmiowb();
 	spin_unlock_irqrestore(&host->lock, flags);
 	return;
@@ -2093,7 +2121,11 @@ static void sdhci_do_set_ios(struct sdhci_host *host, struct mmc_ios *ios)
 static void sdhci_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
 	struct sdhci_host *host = mmc_priv(mmc);
-
+	HUAWEI_DBG("%s: clock %uHz busmode %u powermode %u cs %u Vdd %u "
+		"width %u timing %u\n",
+		mmc_hostname(mmc), ios->clock, ios->bus_mode,
+		ios->power_mode, ios->chip_select, ios->vdd,
+		ios->bus_width, ios->timing);
 	sdhci_runtime_pm_get(host);
 	sdhci_do_set_ios(host, ios);
 	sdhci_runtime_pm_put(host);
@@ -2563,6 +2595,13 @@ out:
 	spin_unlock_irqrestore(&host->lock, flags);
 	sdhci_runtime_pm_put(host);
 
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+	if(err && !strcmp(mmc_hostname(mmc), "mmc0")){
+		DSM_EMMC_LOG(mmc->card, DSM_EMMC_TUNING_ERROR,
+			"%s:eMMC tuning error: %d\n", __FUNCTION__, err);
+	}
+#endif
+
 	return err;
 }
 
@@ -2753,6 +2792,21 @@ static void sdhci_timeout_timer(unsigned long data)
 	spin_lock_irqsave(&host->lock, flags);
 
 	if (host->mrq) {
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+			if(!strcmp(mmc_hostname(host->mmc), "mmc1"))
+				DSM_SDCARD_LOG(DMS_SDCARD_HARDWARE_TIMEOUT_ERR,
+				"sdcard manufactory id is 0x%x %s:hardware time out.\n",sd_manfid,__func__);
+#endif
+
+
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+			if(host->mmc != NULL && host->mmc->card != NULL){
+				if(mmc_card_mmc(host->mmc->card)){
+					DSM_EMMC_LOG(host->mmc->card, DSM_EMMC_HOST_TIMEOUT_ERR,
+						"%s:eMMC HOST Timeout waiting for hardware interrupt.\n", __FUNCTION__);
+				}
+			}
+#endif
 		pr_err("%s: Timeout waiting for hardware "
 			"interrupt.\n", mmc_hostname(host->mmc));
 		if (host->data)
@@ -2801,6 +2855,28 @@ static void sdhci_tuning_timer(unsigned long data)
  * Interrupt handling                                                        *
  *                                                                           *
 \*****************************************************************************/
+static void sdhci_underclocking(struct sdhci_host *host)
+{
+	if (host->mmc->crc_count++ < 2) {
+		return;
+	}
+	switch (host->mmc->ios.timing) {
+	case MMC_TIMING_UHS_SDR12:
+		host->mmc->caps &= ~MMC_CAP_UHS_SDR12;
+	case MMC_TIMING_UHS_SDR25:
+		host->mmc->caps &= ~MMC_CAP_UHS_SDR25;
+	case MMC_TIMING_UHS_SDR50:
+		host->mmc->caps &= ~MMC_CAP_UHS_SDR50;
+	case MMC_TIMING_UHS_DDR50:
+		host->mmc->caps &= ~MMC_CAP_UHS_DDR50;
+	case MMC_TIMING_UHS_SDR104:
+		host->mmc->caps &= ~MMC_CAP_UHS_SDR104;
+		break;
+	default:
+		break;
+	}
+	host->mmc->crc_count = 0;
+}
 
 static void sdhci_cmd_irq(struct sdhci_host *host, u32 intmask, u32 *mask)
 {
@@ -2822,9 +2898,16 @@ static void sdhci_cmd_irq(struct sdhci_host *host, u32 intmask, u32 *mask)
 	if (intmask & SDHCI_INT_TIMEOUT)
 		host->cmd->error = -ETIMEDOUT;
 	else if (intmask & (SDHCI_INT_CRC | SDHCI_INT_END_BIT |
-			SDHCI_INT_INDEX))
+			SDHCI_INT_INDEX)) {
 		host->cmd->error = -EILSEQ;
-
+		if ((host->cmd->opcode != MMC_SEND_TUNING_BLOCK_HS400) &&
+			(host->cmd->opcode != MMC_SEND_TUNING_BLOCK_HS200) &&
+			(host->cmd->opcode != MMC_SEND_STATUS) &&
+			(host->cmd->opcode != MMC_SEND_TUNING_BLOCK)) {
+		    if(!strcmp(mmc_hostname(host->mmc), "mmc1"))
+				sdhci_underclocking(host);
+		}
+	}
 	if (intmask & SDHCI_INT_AUTO_CMD_ERR) {
 		auto_cmd_status = host->auto_cmd_err_sts;
 		pr_err_ratelimited("%s: %s: AUTO CMD err sts 0x%08x\n",
@@ -3002,9 +3085,17 @@ static void sdhci_data_irq(struct sdhci_host *host, u32 intmask)
 	else if (intmask & SDHCI_INT_DATA_END_BIT)
 		host->data->error = -EILSEQ;
 	else if ((intmask & SDHCI_INT_DATA_CRC) &&
-		(command != MMC_BUS_TEST_R))
+		(command != MMC_BUS_TEST_R)) {
+		command = SDHCI_GET_CMD(sdhci_readw(host,
+						    SDHCI_COMMAND));
 		host->data->error = -EILSEQ;
-	else if (intmask & SDHCI_INT_ADMA_ERROR) {
+		if ((command != MMC_SEND_TUNING_BLOCK_HS400) &&
+			(command != MMC_SEND_TUNING_BLOCK_HS200) &&
+			(command != MMC_SEND_TUNING_BLOCK)) {
+			if (!strcmp(mmc_hostname(host->mmc), "mmc1"))
+				sdhci_underclocking(host);
+		}
+	} else if (intmask & SDHCI_INT_ADMA_ERROR) {
 		pr_err("%s: ADMA error\n", mmc_hostname(host->mmc));
 		sdhci_show_adma_error(host);
 		host->data->error = -EIO;
@@ -3079,6 +3170,17 @@ static void sdhci_data_irq(struct sdhci_host *host, u32 intmask)
 	}
 }
 
+struct scatterlist* sdhci_get_cur_sg(void){
+
+	return cur_sg;
+}
+EXPORT_SYMBOL(sdhci_get_cur_sg);
+
+struct scatterlist* sdhci_get_prev_sg(void){
+	return prev_sg;
+}
+EXPORT_SYMBOL(sdhci_get_prev_sg);
+
 #ifdef CONFIG_MMC_CQ_HCI
 static int sdhci_get_cmd_err(u32 intmask)
 {
@@ -3116,6 +3218,11 @@ static irqreturn_t sdhci_cmdq_irq(struct sdhci_host *host, u32 intmask)
 	if (err) {
 		/* Clear the error interrupts */
 		mask = intmask & SDHCI_INT_ERROR_MASK;
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+	DSM_EMMC_LOG(host->mmc->card, DSM_EMMC_HOST_ERR,
+		"%s:%s cmdq interrupt error, status:%x\n",
+		__FUNCTION__, mmc_hostname(host->mmc), mask);
+#endif
 		sdhci_writel(host, mask, SDHCI_INT_STATUS);
 	}
 	return ret;
@@ -3754,6 +3861,7 @@ int sdhci_add_host(struct sdhci_host *host)
 	unsigned int ocr_avail;
 	unsigned int override_timeout_clk;
 	int ret;
+	u32 max_segs_size = 0;
 
 	WARN_ON(host == NULL);
 	if (host == NULL)
@@ -4328,6 +4436,44 @@ int sdhci_add_host(struct sdhci_host *host)
 	sdhci_enable_card_detection(host);
 
 	mmc_add_host(mmc);
+
+	/*add slab cache for mmc1(sdcard)*/
+	if(!strcmp(mmc_hostname(mmc), "mmc1")){
+		max_segs_size = mmc->max_segs*sizeof(struct scatterlist);
+
+		mmc_area_cachep= kmem_cache_create("mmc_area_cache",
+			max_segs_size,
+				0, 0, NULL);
+
+		if(unlikely(!mmc_area_cachep)) {
+			printk(KERN_ERR "sdhci: failed to create slab cache for sdcard\n");
+			goto cache_fail_create;
+		}
+		pr_info("created %s cache size=%d bytes\n",mmc_hostname(mmc), max_segs_size);
+
+		/*malloc cache for sdcard*/
+		cur_sg = kmem_cache_zalloc(mmc_area_cachep, GFP_KERNEL);
+		if(NULL == cur_sg){
+			printk(KERN_ERR "cur_sg cache alloc failed\n");
+			goto cache_fail_create;
+		}
+		pr_info("cur cache alloc sucess\n");
+
+		prev_sg = kmem_cache_zalloc(mmc_area_cachep, GFP_KERNEL);
+		if (NULL == prev_sg){
+			printk(KERN_ERR "prev_sg cache alloc failed\n");
+
+			/*free cur_sg cache due to malloc prev_sg fail*/
+			kmem_cache_free(mmc_area_cachep, cur_sg);
+
+			/*set pointer to NULL*/
+			cur_sg = NULL;
+			prev_sg = NULL;
+			goto cache_fail_create;
+		}
+		pr_info("pre cache alloc sucess\n");
+	}
+cache_fail_create:
 	return 0;
 
 #ifdef SDHCI_USE_LEDS_CLASS

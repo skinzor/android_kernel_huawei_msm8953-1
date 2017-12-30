@@ -49,9 +49,36 @@
 #include <linux/mmc/sd.h>
 
 #include <asm/uaccess.h>
-
+#ifdef CONFIG_MMC_FFU
+#include <linux/mmc/ffu.h>
+#endif
 #include "queue.h"
 
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+#include "mmc_health_diag.h"
+#endif
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+#include <linux/mmc/dsm_sdcard.h>
+#endif
+
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+#include <linux/mmc/dsm_emmc.h>
+/*device index, 0: for emmc, 1: for SDcard*/
+u64 device_index = 0;
+char * mmc_dev_name="mmcblk0";
+struct dsm_dev dsm_emmc = {
+	.name = "dsm_emmc",
+	.fops = NULL,
+	.buff_size = EMMC_DSM_BUFFER_SIZE,
+};
+struct dsm_client *emmc_dclient = NULL;
+
+/*the buffer which transffering to device radar*/
+struct emmc_dsm_log g_emmc_dsm_log;
+
+EXPORT_SYMBOL(emmc_dclient);
+#endif
 MODULE_ALIAS("mmc:block");
 #ifdef MODULE_PARAM_PREFIX
 #undef MODULE_PARAM_PREFIX
@@ -163,9 +190,16 @@ MODULE_PARM_DESC(perdev_minors, "Minors numbers to allocate per device");
 
 static inline int mmc_blk_part_switch(struct mmc_card *card,
 				      struct mmc_blk_data *md);
+#ifdef CONFIG_HW_SYSTEM_WR_PROTECT
+int get_card_status(struct mmc_card *card, u32 *status, int retries);
+#else
 static int get_card_status(struct mmc_card *card, u32 *status, int retries);
+#endif
 static int mmc_blk_cmdq_switch(struct mmc_card *card,
 			       struct mmc_blk_data *md, bool enable);
+
+extern int mmc_suspend(struct mmc_host *host);
+extern int mmc_can_poweroff_notify(const struct mmc_card *card);
 
 static inline void mmc_blk_clear_packed(struct mmc_queue_req *mqrq)
 {
@@ -180,7 +214,11 @@ static inline void mmc_blk_clear_packed(struct mmc_queue_req *mqrq)
 	packed->blocks = 0;
 }
 
+#ifdef CONFIG_HW_SYSTEM_WR_PROTECT
+struct mmc_blk_data *mmc_blk_get(struct gendisk *disk)
+#else
 static struct mmc_blk_data *mmc_blk_get(struct gendisk *disk)
+#endif
 {
 	struct mmc_blk_data *md;
 
@@ -194,6 +232,9 @@ static struct mmc_blk_data *mmc_blk_get(struct gendisk *disk)
 
 	return md;
 }
+#ifdef CONFIG_HW_SYSTEM_WR_PROTECT
+EXPORT_SYMBOL(mmc_blk_get);
+#endif
 
 static inline int mmc_get_devidx(struct gendisk *disk)
 {
@@ -609,6 +650,10 @@ static int mmc_blk_ioctl_cmd(struct block_device *bdev,
 	struct scatterlist sg;
 	int err;
 
+#ifdef CONFIG_MMC_FFU
+	bool cmdq_switch = false;
+#endif
+
 	/*
 	 * The caller must have CAP_SYS_RAWIO, and must be calling this on the
 	 * whole block device, not on a partition.  This prevents overspray
@@ -632,6 +677,11 @@ static int mmc_blk_ioctl_cmd(struct block_device *bdev,
 		goto cmd_done;
 	}
 
+#ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
+	if (mmc_bus_needs_resume(card->host)) {
+		mmc_resume_bus(card->host);
+	}
+#endif
 	cmd.opcode = idata->ic.opcode;
 	cmd.arg = idata->ic.arg;
 	cmd.flags = idata->ic.flags;
@@ -694,6 +744,82 @@ static int mmc_blk_ioctl_cmd(struct block_device *bdev,
 			goto cmd_rel_host;
 		}
 	}
+
+#ifdef CONFIG_MMC_FFU
+    if (cmd.opcode == MMC_FFU_DOWNLOAD_OP) {
+        pr_err("[emmc ffu]:%s cmd.opcode == MMC_FFU_DOWNLOAD_OP\n", __func__);
+        if (mmc_card_cmdq(card))
+        {
+            /*cmdq switch off*/
+            pr_info("CRLOG FFU:mmc_blk_cmdq_switch off.\n");
+            err = mmc_blk_cmdq_switch(card, NULL, false);
+            if (err)
+            {
+                pr_err("%s: %s: cmdq disable failed %d.\n", mmc_hostname(card->host), __func__, err);
+                goto cmd_rel_host;
+            }
+            cmdq_switch = true;
+        }
+
+        err = mmc_ffu_download(card, &cmd , idata->buf,
+            idata->buf_bytes);
+
+        if (!err && cmdq_switch)
+        {
+            /*cmdq switch on*/
+            pr_info("FFU:mmc_blk_cmdq_switch on.\n");
+            err = mmc_blk_cmdq_switch(card, NULL, true);
+            if (err)
+            {
+                pr_err("%s: %s: cmdq enable failed %d.\n", mmc_hostname(card->host), __func__, err);
+                goto cmd_rel_host_halt;
+            }
+        }
+        goto cmd_rel_host;
+    }
+
+    if (cmd.opcode == MMC_FFU_INSTALL_OP) {
+        pr_err("[emmc ffu]:%s cmd.opcode == MMC_FFU_INSTALL_OP\n", __func__);
+        if (mmc_card_cmdq(card))
+        {
+            /*cmdq switch off*/
+            pr_info("FFU:mmc_card_cmdq switch off.\n");
+            err = mmc_blk_cmdq_switch(card, NULL, false);
+            if (err)
+            {
+                pr_err("%s: %s: cmdq disable failed %d.\n", mmc_hostname(card->host), __func__, err);
+                goto cmd_rel_host;
+            }
+            cmdq_switch = true;
+        }
+
+        err = mmc_ffu_install(card);
+
+        if (!err && cmdq_switch)
+        {
+            /*cmdq switch on, the cmdq has already switch on sometimes when restart device at ffu install.*/
+            pr_info("FFU:mmc_card_cmdq switch on.\n");
+            err = mmc_blk_cmdq_switch(card, NULL, true);
+            if (err)
+            {
+                pr_err("%s: %s: cmdq enable failed %d.\n", mmc_hostname(card->host), __func__, err);
+                goto cmd_rel_host_halt;
+            }
+        }
+
+        goto cmd_rel_host;
+    }
+
+#ifdef CONFIG_MMC_FFU_SAMSUNG45
+    if (cmd.opcode == MMC_FFU_SAMSUNG45_OP) {
+        pr_debug("[emmc5.0]:%s cmd.opcode == MMC_FFU_SAMSUNG45_OP\n", __func__);
+
+        err = mmc_ffu_execute(card, &cmd, idata->buf, idata->buf_bytes);
+
+        goto cmd_rel_host;
+    }
+#endif
+#endif
 
 	err = mmc_blk_part_switch(card, md);
 	if (err)
@@ -970,6 +1096,10 @@ cmd_done:
 	return err;
 }
 
+#ifdef CONFIG_HW_EMMC_PROTECT_MODULE
+extern int hw_mmc_blk_phy_wp(struct block_device *bdev);
+#endif
+
 static int mmc_blk_ioctl(struct block_device *bdev, fmode_t mode,
 	unsigned int cmd, unsigned long arg)
 {
@@ -979,6 +1109,17 @@ static int mmc_blk_ioctl(struct block_device *bdev, fmode_t mode,
 	if (cmd == MMC_IOC_RPMB_CMD)
 		ret = mmc_blk_ioctl_rpmb_cmd(bdev,
 				(struct mmc_ioc_rpmb __user *)arg);
+#ifdef CONFIG_HW_EMMC_PROTECT_MODULE
+    if(cmd == MMC_IOC_WP_CMD)
+    {
+        pr_debug("[HW]:%s.ioclt MMC_IOC_WP_CMD.\n", __func__);
+        if(arg == 0x1) {
+            ret = hw_mmc_blk_phy_wp(bdev);
+            if(ret)
+                pr_err("%s; set mmc system wp failed.\n", __func__);
+        }
+    }
+#endif
 	return ret;
 }
 
@@ -1011,7 +1152,7 @@ static int mmc_blk_cmdq_switch(struct mmc_card *card,
 
 	if (!(card->host->caps2 & MMC_CAP2_CMD_QUEUE) ||
 	    !card->ext_csd.cmdq_support ||
-	    (enable && !(md->flags & MMC_BLK_CMD_QUEUE)) ||
+	    (enable && (NULL != md) && !(md->flags & MMC_BLK_CMD_QUEUE)) ||/*(enable && !(md->flags & MMC_BLK_CMD_QUEUE)) ||*/
 	    (cmdq_mode == enable))
 		return 0;
 
@@ -1051,6 +1192,7 @@ out:
 	return ret;
 }
 
+#define SAMSUNG_FW_VER_06	0x0600000000000000
 static inline int mmc_blk_part_switch(struct mmc_card *card,
 				      struct mmc_blk_data *md)
 {
@@ -1073,6 +1215,14 @@ static inline int mmc_blk_part_switch(struct mmc_card *card,
 
 		part_config &= ~EXT_CSD_PART_CONFIG_ACC_MASK;
 		part_config |= md->part_type;
+
+        if ((md->part_type == EXT_CSD_PART_CONFIG_ACC_RPMB) &&
+            (card->cid.manfid == CID_MANFID_SAMSUNG) &&
+            (card->ext_csd.fw_version == SAMSUNG_FW_VER_06)) {
+                pr_info("[Samsumg emmc]:switch to RPMB. Partition type is %d\r\n",md->part_type);
+                mmc_flush_cache(card); /*Cache Flush @Change to RPMB partition*/
+                mdelay(2); /*Delay for APS @Change to RPMB partition*/
+        }
 
 		ret = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
 				 EXT_CSD_PART_CONFIG, part_config,
@@ -1148,7 +1298,11 @@ static u32 mmc_sd_num_wr_blocks(struct mmc_card *card)
 	return result;
 }
 
+#ifdef CONFIG_HW_SYSTEM_WR_PROTECT
+int get_card_status(struct mmc_card *card, u32 *status, int retries)
+#else
 static int get_card_status(struct mmc_card *card, u32 *status, int retries)
+#endif
 {
 	struct mmc_command cmd = {0};
 	int err;
@@ -1197,6 +1351,10 @@ static int card_busy_detect(struct mmc_card *card, unsigned int timeout_ms,
 			pr_err("%s: Card stuck in programming state! %s %s\n",
 				mmc_hostname(card->host),
 				req->rq_disk->disk_name, __func__);
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+                if (mmc_card_sd(card))
+                    mmc_diag_sd_health_status(req->rq_disk,MMC_BLK_STUCK_IN_PRG_ERR);
+#endif
 			return -ETIMEDOUT;
 		}
 
@@ -1255,6 +1413,10 @@ static int send_stop(struct mmc_card *card, unsigned int timeout_ms,
 
 	return card_busy_detect(card, timeout_ms, use_r1b_resp, req, gen_err);
 }
+
+#ifdef CONFIG_HW_SYSTEM_WR_PROTECT
+EXPORT_SYMBOL(get_card_status);
+#endif
 
 #define ERR_NOMEDIUM	3
 #define ERR_RETRY	2
@@ -1961,11 +2123,41 @@ static int mmc_blk_packed_err_check(struct mmc_card *card,
 				  ext_csd[EXT_CSD_PACKED_FAILURE_INDEX] - 1;
 				check = MMC_BLK_PARTIAL;
 			}
+
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+			if(mmc_card_mmc(card)){
+				DSM_EMMC_LOG(card, DSM_EMMC_PACKED_FAILURE,
+					"%s: packed cmd failed, nr %u, sectors %u, "
+					"failure index: %d\n",
+					req->rq_disk->disk_name, packed->nr_entries,
+					packed->blocks, packed->idx_failure);
+			}
+#endif
 			pr_err("%s: packed cmd failed, nr %u, sectors %u, "
 			       "failure index: %d\n",
 			       req->rq_disk->disk_name, packed->nr_entries,
 			       packed->blocks, packed->idx_failure);
 		}
+
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+		if(ext_csd[EXT_CSD_EXP_EVENTS_STATUS] &
+			EXT_CSD_DYNCAP_NEEDED) {
+			if(mmc_card_mmc(card)){
+				DSM_EMMC_LOG(card, DSM_EMMC_DYNCAP_NEEDED,
+					"%s: DYNCAP_NEEDED [58]: %d, the device may degrade in performance and eventually become non-functional\n",
+					req->rq_disk->disk_name, ext_csd[58]);
+			}
+		}
+		if(ext_csd[EXT_CSD_EXP_EVENTS_STATUS] &
+			EXT_CSD_SYSPOOL_EXHAUSTED) {
+			if(mmc_card_mmc(card)){
+				DSM_EMMC_LOG(card, DSM_EMMC_SYSPOOL_EXHAUSTED,
+					"%s: SYSPOOL_EXHAUSTED, System resources pool exhausted\n",
+					req->rq_disk->disk_name);
+			}
+		}
+#endif
+
 free:
 		kfree(ext_csd);
 	}
@@ -2789,6 +2981,11 @@ static struct mmc_cmdq_req *mmc_blk_cmdq_rw_prep(
 		 cmdq_rq, cmdq_rq->blk_addr,
 		 (cmdq_rq->cmdq_req_flags & DIR) ? 1 : 0);
 
+#ifdef CONFIG_HUAWEI_IO_TRACING
+	trace_mmc_blk_cmdq_rw_start(cmdq_rq->cmdq_req_flags, cmdq_rq->tag, cmdq_rq->blk_addr,
+	   (cmdq_rq->data.blocks * cmdq_rq->data.blksz));
+#endif
+
 	return &mqrq->cmdq_req;
 }
 
@@ -3216,6 +3413,11 @@ void mmc_blk_cmdq_complete_rq(struct request *rq)
 		goto out;
 	}
 
+#ifdef CONFIG_HUAWEI_IO_TRACING
+	trace_mmc_blk_cmdq_rw_end(cmdq_req->cmdq_req_flags, cmdq_req->tag, cmdq_req->blk_addr, 
+	    cmdq_req->data.bytes_xfered);
+#endif
+ 
 	blk_end_request(rq, err, cmdq_req->data.bytes_xfered);
 
 out:
@@ -3261,8 +3463,22 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 	const u8 packed_nr = 2;
 	u8 reqs = 0;
 
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+    unsigned long long time1 = 0;
+    unsigned int rq_byte=0;
+#endif
+
 	if (!rqc && !mq->mqrq_prev->req)
 		return 0;
+
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+    if(!strcmp(current->comm,"mmcqd/1"))
+    {
+        mmc_trigger_ro_check(rqc,md->disk,md->read_only);
+        time1 = sched_clock();
+        rq_byte = mmc_calculate_ioworkload_and_rwspeed(time1,rqc,md->disk);
+    }
+#endif
 
 	if (rqc)
 		reqs = mmc_blk_prep_packed_list(mq, rqc);
@@ -3301,6 +3517,13 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 		req = mq_rq->req;
 		type = rq_data_dir(req) == READ ? MMC_BLK_READ : MMC_BLK_WRITE;
 		mmc_queue_bounce_post(mq_rq);
+
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+        if(mmc_card_sd(card))
+        {
+            mmc_diag_sd_health_status(md->disk,mmc_get_rw_status(status));
+        }
+#endif
 
 		switch (status) {
 		case MMC_BLK_SUCCESS:
@@ -3343,9 +3566,14 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 				break;
 			/* Fall through */
 		case MMC_BLK_ABORT:
-			if (!mmc_blk_reset(md, card->host, type) &&
+			if (!mmc_blk_reset(md, card->host, 0) &&
 					(retry++ < (MMC_BLK_MAX_RETRIES + 1)))
 					break;
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+			if(!strcmp(mmc_hostname(card->host), "mmc1"))
+				DSM_SDCARD_LOG(DMS_SDCARD_MMC_BLK_ABORT,\
+					"sdcard manufactory id is 0x%x %s:block transfer abort.\n",sd_manfid,__func__);
+#endif
 			goto cmd_abort;
 		case MMC_BLK_DATA_ERR: {
 			int err;
@@ -3402,9 +3630,27 @@ static int mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *rqc)
 		}
 	} while (ret);
 
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+    if(!strcmp(current->comm,"mmcqd/1"))
+    {
+        mmc_calculate_rw_size(time1,rq_byte,rqc);
+    }
+#endif
+
 	return 1;
 
  cmd_abort:
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+	if(card->host->index == device_index){
+		if(type == MMC_BLK_READ){
+			DSM_EMMC_LOG(card, DSM_EMMC_READ_ERR,
+				"%s: Read error, mmc blk status: %d \n", __FUNCTION__, status);
+		}else{
+			DSM_EMMC_LOG(card, DSM_EMMC_WRITE_ERR,
+				"%s: Write error, mmc blk status: %d \n", __FUNCTION__, status);
+		}
+	}
+#endif
 	if (mmc_packed_cmd(mq_rq->cmd_type)) {
 		mmc_blk_abort_packed_req(mq_rq);
 	} else {
@@ -3760,7 +4006,7 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 	    ((card->ext_csd.rel_param & EXT_CSD_WR_REL_PARAM_EN) ||
 	     card->ext_csd.rel_sectors)) {
 		md->flags |= MMC_BLK_REL_WR;
-		blk_queue_flush(md->queue.queue, REQ_FLUSH | REQ_FUA);
+		blk_queue_write_cache(md->queue.queue, true, true);
 	}
 
 	if (card->cmdq_init) {
@@ -3898,6 +4144,12 @@ static void mmc_blk_remove_req(struct mmc_blk_data *md)
 					&md->power_ro_lock);
 
 			del_gendisk(md->disk);
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+			if(MMC_TYPE_SD == card->type)
+			{
+				dsm_sdcard_cmd_logs[DSM_SDCARD_REPORT_UEVENT].value = DSM_REPORT_UEVENT_FALSE;
+			}
+#endif
 		}
 		mmc_blk_put(md);
 	}
@@ -4068,6 +4320,16 @@ static const struct mmc_fixup blk_fixups[] =
 	MMC_FIXUP("SEM04G", 0x45, CID_OEMID_ANY, add_quirk_mmc,
 		  MMC_QUIRK_INAND_DATA_TIMEOUT),
 
+	/*In order to give sdcard more tome to response, add wait time to 300ms.*/
+	MMC_FIXUP("SS16G", CID_MANFID_ANY, CID_OEMID_ANY, add_quirk_sd,
+		MMC_QUIRK_LONG_READ_TIME),
+	MMC_FIXUP("SU08G", CID_MANFID_ANY, CID_OEMID_ANY, add_quirk_sd,
+		MMC_QUIRK_LONG_READ_TIME),
+
+	/*a special kingston 16G SDcard can't supoort cmd23 besides SDR104.*/
+	MMC_FIXUP("SD16G", 0x41, 0x3432, add_quirk_sd,
+		MMC_QUIRK_BLK_NO_CMD23),
+
 	/*
 	 * On these Samsung MoviNAND parts, performing secure erase or
 	 * secure trim can result in unrecoverable corruption due to a
@@ -4098,6 +4360,10 @@ static int mmc_blk_probe(struct mmc_card *card)
 	struct mmc_blk_data *md, *part_md;
 	char cap_str[10];
 
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+	int   buff_len;
+	char *log_buff;
+#endif
 	/*
 	 * Check that the card supports the command class(es) we need.
 	 */
@@ -4121,8 +4387,18 @@ static int mmc_blk_probe(struct mmc_card *card)
 
 	mmc_set_drvdata(card, md);
 
+#ifdef CONFIG_HW_SD_HEALTH_DETECT
+    if(mmc_card_sd(card))
+    {
+        mmc_clear_report_info();
+    }
+#endif
+
 #ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
-	mmc_set_bus_resume_policy(card->host, 1);
+	if (mmc_card_sd(card)) {
+		pr_info("%s: set manual_resume in mmc_blk_probe.\n", mmc_hostname(card->host));
+		mmc_set_bus_resume_policy(card->host, 1);
+	}
 #endif
 	if (mmc_add_disk(md))
 		goto out;
@@ -4131,6 +4407,13 @@ static int mmc_blk_probe(struct mmc_card *card)
 		if (mmc_add_disk(part_md))
 			goto out;
 	}
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+	if(MMC_TYPE_SD == card->type)
+	{
+		dsm_sdcard_cmd_logs[DSM_SDCARD_REPORT_UEVENT].value = DSM_REPORT_UEVENT_TRUE;
+	}
+#endif
 
 	pm_runtime_set_autosuspend_delay(&card->dev, MMC_AUTOSUSPEND_DELAY_MS);
 	pm_runtime_use_autosuspend(&card->dev);
@@ -4147,6 +4430,16 @@ static int mmc_blk_probe(struct mmc_card *card)
 	return 0;
 
  out:
+
+ #ifdef CONFIG_HUAWEI_SDCARD_DSM
+	if(MMC_TYPE_SD == card->type && !dsm_client_ocuppy(sdcard_dclient))
+	{
+		log_buff = dsm_sdcard_get_log(DSM_SDCARD_REPORT_UEVENT,0);
+		buff_len = strlen(log_buff);
+		dsm_client_copy(sdcard_dclient,log_buff,buff_len + 1);
+		dsm_client_notify(sdcard_dclient, DSM_SDCARD_NO_UEVENT_REPORT);
+	}
+#endif
 	mmc_blk_remove_parts(card, md);
 	mmc_blk_remove_req(md);
 	return 0;
@@ -4167,7 +4460,11 @@ static void mmc_blk_remove(struct mmc_card *card)
 	mmc_blk_remove_req(md);
 	mmc_set_drvdata(card, NULL);
 #ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
-	mmc_set_bus_resume_policy(card->host, 0);
+	if (mmc_card_sd(card)) {
+		pr_info("%s: clear manual_resume and need_resume in mmc_blk_remove.\n", mmc_hostname(card->host));
+		mmc_set_bus_resume_policy(card->host, 0);
+		card->host->bus_resume_flags &= ~MMC_BUSRESUME_NEEDS_RESUME;
+	}
 #endif
 }
 
@@ -4202,9 +4499,25 @@ static void mmc_blk_shutdown(struct mmc_card *card)
 {
 	_mmc_blk_suspend(card, 1);
 
-	/* send power off notification */
-	if (mmc_card_mmc(card))
-		mmc_send_pon(card);
+	/* stop the bkops */
+	if(card->ext_csd.bkops_en)
+	{
+		mmc_claim_host(card->host);
+		mmc_stop_bkops(card);
+		mmc_release_host(card->host);
+	}
+
+	/* send power off notification or cmd7->cmd5 */
+	if (mmc_card_mmc(card)) {
+		if((card->pon_type) && mmc_can_poweroff_notify(card)) {
+			pr_info("host will send power off notification to eMMC.\n");
+			mmc_send_pon(card);
+		}
+		else {
+			pr_info("host will send cmd7 and cmd5 to eMMC.\n");
+			mmc_suspend(card->host);
+		}
+	}
 }
 
 #ifdef CONFIG_PM
@@ -4263,6 +4576,13 @@ static int __init mmc_blk_init(void)
 	res = mmc_register_driver(&mmc_driver);
 	if (res)
 		goto out2;
+
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+	if (!emmc_dclient) {
+		emmc_dclient = dsm_register_client(&dsm_emmc);
+	}
+	spin_lock_init(&g_emmc_dsm_log.lock);
+#endif
 
 	return 0;
  out2:

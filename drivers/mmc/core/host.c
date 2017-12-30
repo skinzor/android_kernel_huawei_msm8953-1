@@ -31,6 +31,17 @@
 #include "core.h"
 #include "host.h"
 
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+#include <linux/mmc/dsm_sdcard.h>
+struct dsm_dev dsm_sdcard = {
+	.name = "dsm_sdcard",
+	.fops = NULL,
+	.buff_size = 1024,
+};
+struct dsm_client *sdcard_dclient = NULL;
+char g_dsm_log_sum[1024] = {0};
+#endif
+
 #define cls_dev_to_mmc_host(d)	container_of(d, struct mmc_host, class_dev)
 #define MMC_DEVFRQ_DEFAULT_UP_THRESHOLD 35
 #define MMC_DEVFRQ_DEFAULT_DOWN_THRESHOLD 5
@@ -520,6 +531,13 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 	host->slot.cd_irq = -EINVAL;
 
 	spin_lock_init(&host->lock);
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+	if (!sdcard_dclient) {
+		sdcard_dclient = dsm_register_client(&dsm_sdcard);
+	}
+#endif
+
 	init_waitqueue_head(&host->wq);
 	INIT_DELAYED_WORK(&host->detect, mmc_rescan);
 #ifdef CONFIG_PM
@@ -543,6 +561,10 @@ free:
 	kfree(host);
 	return NULL;
 }
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+EXPORT_SYMBOL(sdcard_dclient);
+#endif
 
 EXPORT_SYMBOL(mmc_alloc_host);
 
