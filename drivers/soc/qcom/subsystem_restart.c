@@ -360,7 +360,12 @@ static struct bus_type subsys_bus_type = {
 
 static DEFINE_IDA(subsys_ida);
 
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+int enable_ramdumps;
+int subsystem_restart_requested = 0;
+#else
 static int enable_ramdumps;
+#endif
 module_param(enable_ramdumps, int, S_IRUGO | S_IWUSR);
 
 static int enable_mini_ramdumps;
@@ -612,7 +617,11 @@ static void subsystem_ramdump(struct subsys_device *dev, void *data)
 {
 	const char *name = dev->desc->name;
 
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+	if (dev->desc->ramdump && enable_ramdumps)
+#else
 	if (dev->desc->ramdump)
+#endif
 		if (dev->desc->ramdump(is_ramdump_enabled(dev), dev->desc) < 0)
 			pr_warn("%s[%p]: Ramdump failed.\n", name, current);
 	dev->do_ramdump_on_put = false;
@@ -761,6 +770,13 @@ void *__subsystem_get(const char *name, const char *fw_name)
 	void *retval;
 	struct subsys_tracking *track;
 
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+	if(fw_name && strncmp(fw_name, "modem", (sizeof("modem") - 1)) == 0) {
+		printk("PIL: %s called by %s\n", __func__, current->comm);
+		WARN_ON(1);
+	}
+#endif
+
 	if (!name)
 		return NULL;
 
@@ -848,6 +864,14 @@ void subsystem_put(void *subsystem)
 	struct subsys_device *subsys_d, *subsys = subsystem;
 	struct subsys_tracking *track;
 
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+	if(subsystem && strncmp(subsys->desc->name, "modem",
+					(sizeof("modem") - 1)) == 0) {
+		printk("PIL: %s called by %s\n", __func__, current->comm);
+		WARN_ON(1);
+	}
+#endif
+
 	if (IS_ERR_OR_NULL(subsys))
 		return;
 
@@ -887,6 +911,9 @@ static void subsystem_restart_wq_func(struct work_struct *work)
 	struct subsys_tracking *track;
 	unsigned count;
 	unsigned long flags;
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+	int enable_ramdumps_old = 0;
+#endif
 
 	/*
 	 * It's OK to not take the registration lock at this point.
@@ -933,6 +960,15 @@ static void subsystem_restart_wq_func(struct work_struct *work)
 
 	pr_debug("[%p]: Starting restart sequence for %s\n", current,
 			desc->name);
+
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+	/* disable subsystem ramdump if subsystem restart is requested */
+	if (subsystem_restart_requested) {
+		enable_ramdumps_old = enable_ramdumps;
+		enable_ramdumps = 0;
+	}
+#endif
+
 	notify_each_subsys_device(list, count, SUBSYS_BEFORE_SHUTDOWN, NULL);
 	for_each_subsys_device(list, count, NULL, subsystem_shutdown);
 	notify_each_subsys_device(list, count, SUBSYS_AFTER_SHUTDOWN, NULL);
@@ -952,6 +988,13 @@ static void subsystem_restart_wq_func(struct work_struct *work)
 	notify_each_subsys_device(list, count, SUBSYS_BEFORE_POWERUP, NULL);
 	for_each_subsys_device(list, count, NULL, subsystem_powerup);
 	notify_each_subsys_device(list, count, SUBSYS_AFTER_POWERUP, NULL);
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+	/* restore subsystem ramdump switch */
+	if (subsystem_restart_requested) {
+		enable_ramdumps = enable_ramdumps_old;
+		subsystem_restart_requested = 0;
+	}
+#endif
 
 	pr_info("[%p]: Restart sequence for %s completed.\n",
 			current, desc->name);
@@ -988,6 +1031,9 @@ static void __subsystem_restart_dev(struct subsys_device *dev)
 			__pm_stay_awake(&dev->ssr_wlock);
 			queue_work(ssr_wq, &dev->work);
 		} else {
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+			if (!subsystem_restart_requested)
+#endif
 			panic("Subsystem %s crashed during SSR!", name);
 		}
 	} else
@@ -1050,6 +1096,13 @@ int subsystem_restart_dev(struct subsys_device *dev)
 		__subsystem_restart_dev(dev);
 		break;
 	case RESET_SOC:
+#ifdef CONFIG_HUAWEI_MODEM_CRASH_LOG
+		if (subsystem_restart_requested == 1) {
+			__subsystem_restart_dev(dev);
+			pr_info("subsys-restart: huawei restart request,so couldn't reboot!!");
+			break;
+		}
+#endif
 		__pm_stay_awake(&dev->ssr_wlock);
 		schedule_work(&dev->device_restart_work);
 		return 0;

@@ -35,6 +35,7 @@
 #include <linux/qdsp6v2/apr_tal.h>
 #include <linux/qdsp6v2/dsp_debug.h>
 #include <linux/ipc_logging.h>
+#include <sound/hw_audio_info.h>
 
 #define SCM_Q6_NMI_CMD 0x1
 #define APR_PKT_IPC_LOG_PAGE_CNT 2
@@ -290,6 +291,8 @@ int apr_send_pkt(void *handle, uint32_t *buf)
 	if ((svc->dest_id == APR_DEST_QDSP6) &&
 	    (apr_get_q6_state() != APR_SUBSYS_LOADED)) {
 		pr_err("%s: Still dsp is not Up\n", __func__);
+		audio_dsm_report_num(DSM_AUDIO_MODEM_CRASH_ERROR_NO,
+								DSM_AUDIO_MESG_MODEM_STILL_NOTUP);
 		return -ENETRESET;
 	} else if ((svc->dest_id == APR_DEST_MODEM) &&
 		   (apr_get_modem_state() == APR_SUBSYS_DOWN)) {
