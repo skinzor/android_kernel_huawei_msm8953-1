@@ -41,6 +41,8 @@ struct cpufreq_suspend_t {
 	int device_suspended;
 };
 
+static unsigned int cpu0_max_freq = 0;
+
 static DEFINE_PER_CPU(struct cpufreq_suspend_t, suspend_data);
 
 static int set_cpu_freq(struct cpufreq_policy *policy, unsigned int new_freq,
@@ -145,6 +147,9 @@ static int msm_cpufreq_init(struct cpufreq_policy *policy)
 
 	if (cpufreq_frequency_table_cpuinfo(policy, table))
 		pr_err("cpufreq: failed to get policy min/max\n");
+
+	if (cpu0_max_freq < policy->max)
+		cpu0_max_freq = policy->max;
 
 	cur_freq = clk_get_rate(cpu_clk[policy->cpu])/1000;
 
@@ -380,6 +385,16 @@ static struct cpufreq_frequency_table *cpufreq_parse_dt(struct device *dev,
 	return ftbl;
 }
 
+static ssize_t core_max_freq_show(struct device *dev,
+				  struct device_attribute *attr,
+				  char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%u\n", cpu0_max_freq);
+}
+
+
+static DEVICE_ATTR(core_max_freq, 0400, core_max_freq_show, NULL);
+
 static int __init msm_cpufreq_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -388,6 +403,13 @@ static int __init msm_cpufreq_probe(struct platform_device *pdev)
 	struct clk *c;
 	int cpu;
 	struct cpufreq_frequency_table *ftbl;
+	int rc;
+
+	rc = device_create_file(cpu_subsys.dev_root, &dev_attr_core_max_freq);
+	if (rc) {
+		pr_err ("Cannot create the core max freq\n");
+		return rc;
+	}
 
 	l2_clk = devm_clk_get(dev, "l2_clk");
 	if (IS_ERR(l2_clk))
