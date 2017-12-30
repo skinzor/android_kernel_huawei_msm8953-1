@@ -163,6 +163,9 @@
 		(hap->init_drive_period_code = (hap->init_drive_period_code * \
 					(1000 - rc_clk_err_percent_x10)) / 1000)
 
+#define CANNES_VIBRATING_MAX       60
+#define CANNES_VIBRATING_MIN        10
+
 u32 adjusted_lra_play_rate_code[ADJUSTED_LRA_PLAY_RATE_CODE_ARRSIZE];
 
 /* haptic debug register set */
@@ -362,6 +365,7 @@ struct qpnp_hap {
 	bool correct_lra_drive_freq;
 	bool misc_trim_error_rc19p2_clk_reg_present;
 	bool perform_lra_auto_resonance_search;
+	bool constant_vibrate_flag;
 };
 
 static struct qpnp_hap *ghap;
@@ -434,24 +438,25 @@ static int qpnp_hap_mod_enable(struct qpnp_hap *hap, int on)
 	if (on) {
 		val |= QPNP_HAP_EN;
 	} else {
-		for (i = 0; i < QPNP_HAP_MAX_RETRIES; i++) {
-			/* wait for 4 cycles of play rate */
-			unsigned long sleep_time =
-				QPNP_HAP_CYCLS * hap->wave_play_rate_us;
+		if(hap->act_type == QPNP_HAP_LRA){
+			for (i = 0; i < QPNP_HAP_MAX_RETRIES; i++) {
+				unsigned long sleep_time =
+					QPNP_HAP_CYCLS * hap->wave_play_rate_us;
 
-			rc = qpnp_hap_read_reg(hap, &val,
-				QPNP_HAP_STATUS(hap->base));
+				rc = qpnp_hap_read_reg(hap, &val,
+					QPNP_HAP_STATUS(hap->base));
 
-			dev_dbg(&hap->spmi->dev, "HAP_STATUS=0x%x\n", val);
+				dev_dbg(&hap->spmi->dev, "HAP_STATUS=0x%x\n", val);
 
-			/* wait for QPNP_HAP_CYCLS cycles of play rate */
-			if (val & QPNP_HAP_STATUS_BUSY) {
-				usleep_range(sleep_time, sleep_time + 1);
-				if (hap->play_mode == QPNP_HAP_DIRECT ||
-					hap->play_mode == QPNP_HAP_PWM)
+				/* wait for QPNP_HAP_CYCLS cycles of play rate */
+				if (val & QPNP_HAP_STATUS_BUSY) {
+					usleep_range(sleep_time, sleep_time + 1);
+					if (hap->play_mode == QPNP_HAP_DIRECT ||
+						hap->play_mode == QPNP_HAP_PWM)
+						break;
+				} else
 					break;
-			} else
-				break;
+			}
 		}
 
 		if (i >= QPNP_HAP_MAX_RETRIES)
@@ -460,6 +465,8 @@ static int qpnp_hap_mod_enable(struct qpnp_hap *hap, int on)
 
 		val &= ~QPNP_HAP_EN;
 	}
+
+	dev_err(&hap->spmi->dev, "%s vibrator set %u.\n", __func__,val);
 
 	rc = qpnp_hap_write_reg(hap, &val,
 			QPNP_HAP_EN_CTL_REG(hap->base));
@@ -482,6 +489,7 @@ static int qpnp_hap_play(struct qpnp_hap *hap, int on)
 	else
 		val &= ~QPNP_HAP_PLAY_EN;
 
+	dev_err(&hap->spmi->dev, "[vibrator]%s start or stop vibrate, set reg val:%x. \n", __func__,val);
 	rc = qpnp_hap_write_reg(hap, &val,
 			QPNP_HAP_PLAY_REG(hap->base));
 	if (rc < 0)
@@ -1654,6 +1662,7 @@ static void qpnp_hap_td_enable(struct timed_output_dev *dev, int value)
 		hrtimer_cancel(&hap->auto_res_err_poll_timer);
 
 	hrtimer_cancel(&hap->hap_timer);
+	dev_err(&hap->spmi->dev, "enable vibrator value=%d.\n",value);
 
 	if (value == 0) {
 		if (hap->state == 0) {
@@ -1664,6 +1673,15 @@ static void qpnp_hap_td_enable(struct timed_output_dev *dev, int value)
 	} else {
 		value = (value > hap->timeout_ms ?
 				 hap->timeout_ms : value);
+		/* change vibrating time to 60ms in project CANNES
+		 *while vibrating time is between 10ms to 60ms */
+		if (true == hap->constant_vibrate_flag) {
+			if ((value <= CANNES_VIBRATING_MAX)
+				&& (value > CANNES_VIBRATING_MIN)) {
+				value = CANNES_VIBRATING_MAX;
+			}
+		}
+		dev_info(&hap->spmi->dev, "vibrating_time is %d\n",value);
 		hap->state = 1;
 		hrtimer_start(&hap->hap_timer,
 			      ktime_set(value / 1000, (value % 1000) * 1000000),
@@ -1751,6 +1769,7 @@ static void qpnp_hap_worker(struct work_struct *work)
 	if (hap->sc_duration == SC_MAX_DURATION) {
 		rc = qpnp_hap_write_reg(hap, &val,
 				QPNP_HAP_EN_CTL_REG(hap->base));
+		dev_err(&hap->spmi->dev, "dectect vibrator short circuit exceeds 5 secs.\n");
 	} else {
 		if (hap->play_mode == QPNP_HAP_PWM)
 			qpnp_hap_mod_enable(hap, hap->state);
@@ -2120,6 +2139,7 @@ static int qpnp_hap_parse_dt(struct qpnp_hap *hap)
 	rc = of_property_read_u32(spmi->dev.of_node,
 			"qcom,timeout-ms", &temp);
 	if (!rc) {
+		dev_err(&spmi->dev, "[vibrator]qpnp_hap_parse_dt read timeout:%d\n", temp);
 		hap->timeout_ms = temp;
 	} else if (rc != -EINVAL) {
 		dev_err(&spmi->dev, "Unable to read timeout\n");
@@ -2130,6 +2150,7 @@ static int qpnp_hap_parse_dt(struct qpnp_hap *hap)
 	rc = of_property_read_string(spmi->dev.of_node,
 			"qcom,actuator-type", &temp_str);
 	if (!rc) {
+		dev_err(&spmi->dev, "[vibrator]qpnp_hap_parse_dt read actuator-type:%s\n", temp_str);
 		if (strcmp(temp_str, "erm") == 0)
 			hap->act_type = QPNP_HAP_ERM;
 		else if (strcmp(temp_str, "lra") == 0)
@@ -2255,6 +2276,7 @@ static int qpnp_hap_parse_dt(struct qpnp_hap *hap)
 			"qcom,vmax-mv", &temp);
 	if (!rc) {
 		hap->vmax_mv = temp;
+		dev_err(&spmi->dev, "[vibrator] read vmax:%d\n", hap->vmax_mv);
 	} else if (rc != -EINVAL) {
 		dev_err(&spmi->dev, "Unable to read vmax\n");
 		return rc;
@@ -2354,6 +2376,10 @@ static int qpnp_hap_parse_dt(struct qpnp_hap *hap)
 		}
 	}
 
+	hap->constant_vibrate_flag = of_property_read_bool(spmi->dev.of_node,
+			"qcom,constant_vibrate_flag");
+	dev_info(&spmi->dev, "constant_vibrate_flag is %d\n",hap->constant_vibrate_flag);
+
 	if (of_find_property(spmi->dev.of_node, "vcc_pon-supply", NULL))
 		hap->manage_pon_supply = true;
 
@@ -2371,6 +2397,8 @@ static int qpnp_haptic_probe(struct spmi_device *spmi)
 	if (!hap)
 		return -ENOMEM;
 
+	dev_err(&spmi->dev, "[vibrator]enter qpnp_haptic_probes\n");
+
 	hap->spmi = spmi;
 
 	hap_resource = spmi_get_resource(spmi, 0, IORESOURCE_MEM, 0);
@@ -2384,15 +2412,17 @@ static int qpnp_haptic_probe(struct spmi_device *spmi)
 
 	rc = qpnp_hap_parse_dt(hap);
 	if (rc) {
-		dev_err(&spmi->dev, "DT parsing failed\n");
+		dev_err(&spmi->dev, "[vibrator]DT parsing failed\n");
 		return rc;
 	}
+	dev_err(&spmi->dev, "[vibrator]qpnp_hap_parse_dt success\n");
 
 	rc = qpnp_hap_config(hap);
 	if (rc) {
-		dev_err(&spmi->dev, "hap config failed\n");
+		dev_err(&spmi->dev, "[vibrator]hap config failed\n");
 		return rc;
 	}
+	dev_err(&spmi->dev, "[vibrator]qpnp_hap_config success\n");
 
 	mutex_init(&hap->lock);
 	mutex_init(&hap->wf_lock);
@@ -2431,6 +2461,8 @@ static int qpnp_haptic_probe(struct spmi_device *spmi)
 			goto sysfs_fail;
 		}
 	}
+
+	dev_err(&spmi->dev, "vibrator probe success in %s.\n",__func__);
 
 	if (hap->manage_pon_supply) {
 		vcc_pon = regulator_get(&spmi->dev, "vcc_pon");
