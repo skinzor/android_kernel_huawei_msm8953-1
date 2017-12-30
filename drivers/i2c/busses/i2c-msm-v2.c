@@ -32,6 +32,8 @@
 #include <linux/dma-mapping.h>
 #include <linux/i2c.h>
 #include <linux/of.h>
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
 #include <linux/msm-sps.h>
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
@@ -43,6 +45,7 @@ static const enum msm_i2_debug_level DEFAULT_DBG_LVL = MSM_DBG;
 static const enum msm_i2_debug_level DEFAULT_DBG_LVL = MSM_ERR;
 #endif
 
+volatile int i2c_msm_pm_flags = 0;
 /* Forward declarations */
 static bool i2c_msm_xfer_next_buf(struct i2c_msm_ctrl *ctrl);
 static int i2c_msm_xfer_wait_for_completion(struct i2c_msm_ctrl *ctrl,
@@ -50,7 +53,7 @@ static int i2c_msm_xfer_wait_for_completion(struct i2c_msm_ctrl *ctrl,
 static int  i2c_msm_pm_resume(struct device *dev);
 static void i2c_msm_pm_suspend(struct device *dev);
 static void i2c_msm_clk_path_init(struct i2c_msm_ctrl *ctrl);
-
+static int i2c_msm_recover_bus_busy(struct i2c_msm_ctrl *ctrl);
 /* string table for enum i2c_msm_xfer_mode_id */
 const char * const i2c_msm_mode_str_tbl[] = {
 	"FIFO", "BLOCK", "DMA", "None",
@@ -1969,7 +1972,11 @@ static int i2c_msm_qup_post_xfer(struct i2c_msm_ctrl *ctrl, int err)
 		    (ctrl->xfer.err == I2C_MSM_ERR_BUS_ERR)  ||
 		    (ctrl->xfer.err == I2C_MSM_ERR_TIMEOUT)) {
 			if (i2c_msm_qup_slv_holds_bus(ctrl))
-				qup_i2c_recover_bus_busy(ctrl);
+			{
+				dev_err(ctrl->dev, "i2c bus is holded by slv\n");
+				if (i2c_msm_recover_bus_busy(ctrl))
+					qup_i2c_recover_bus_busy(ctrl);
+			}
 
 			/* do not generalize error to EIO if its already set */
 			if (!err)
@@ -2554,8 +2561,10 @@ i2c_msm_rsrcs_gpio_get_state(struct i2c_msm_ctrl *ctrl, const char *name)
  *
  * @pre platform data must be initialized
  */
-static int i2c_msm_rsrcs_gpio_pinctrl_init(struct i2c_msm_ctrl *ctrl)
+static int i2c_msm_rsrcs_gpio_pinctrl_init(struct i2c_msm_ctrl *ctrl, struct platform_device *pdev)
 {
+	int i = 0;
+	struct device_node *node = pdev->dev.of_node;
 	ctrl->rsrcs.pinctrl = devm_pinctrl_get(ctrl->dev);
 	if (IS_ERR_OR_NULL(ctrl->rsrcs.pinctrl)) {
 		dev_err(ctrl->dev, "error devm_pinctrl_get() failed err:%ld\n",
@@ -2569,34 +2578,126 @@ static int i2c_msm_rsrcs_gpio_pinctrl_init(struct i2c_msm_ctrl *ctrl)
 	ctrl->rsrcs.gpio_state_suspend =
 		i2c_msm_rsrcs_gpio_get_state(ctrl, I2C_MSM_PINCTRL_SUSPEND);
 
+	ctrl->rsrcs.gpio_state_default =
+		i2c_msm_rsrcs_gpio_get_state(ctrl, I2C_MSM_PINCTRL_DEFAULT);
+	if (IS_ERR_OR_NULL(ctrl->rsrcs.gpio_state_default))
+		dev_err(ctrl->dev,"%s: can not get gpio default pinstate\n", __func__);
+	else {
+		dev_info(ctrl->dev,"%s: get gpio default pinstate\n", __func__);
+		for (i = I2C_MSM_DEFAULT_CLK; i < I2C_MSM_DEFAULT_MAX_GPIO; i++) {
+			ctrl->gpios[i] = of_get_gpio(node, i);
+			dev_info(ctrl->dev, "%s: of_get_gpio[%d] = %d\n",__func__, i,ctrl->gpios[i]);
+			if (ctrl->gpios[i] < 0)
+				dev_err(ctrl->dev, "%s: Fail to get msm gpio: %d\n",__func__, i);
+		}
+	}
 	return 0;
 }
 
-static void i2c_msm_pm_pinctrl_state(struct i2c_msm_ctrl *ctrl,
-				bool runtime_active)
+static int i2c_msm_pm_pinctrl_state(struct i2c_msm_ctrl *ctrl,
+				enum i2c_msm_pinctl_state pinctl_state)
 {
 	struct pinctrl_state *pins_state;
 	const char           *pins_state_name;
+	int i = 0;
+	int ret = 0;
 
-	if (runtime_active) {
+	if (pinctl_state == I2C_MSM_DFS_ACTIVE) {
 		pins_state      = ctrl->rsrcs.gpio_state_active;
 		pins_state_name = I2C_MSM_PINCTRL_ACTIVE;
-	} else {
+	} else if(pinctl_state == I2C_MSM_DFS_SUSPEND) {
 		pins_state      = ctrl->rsrcs.gpio_state_suspend;
 		pins_state_name = I2C_MSM_PINCTRL_SUSPEND;
+	} else if(pinctl_state == I2C_MSM_DFS_DEFAULT) {
+		pins_state      = ctrl->rsrcs.gpio_state_default;
+		pins_state_name = I2C_MSM_PINCTRL_DEFAULT;
 	}
 
 	if (!IS_ERR_OR_NULL(pins_state)) {
-		int ret = pinctrl_select_state(ctrl->rsrcs.pinctrl, pins_state);
-		if (ret)
+		ret = pinctrl_select_state(ctrl->rsrcs.pinctrl, pins_state);
+		if (ret){
 			dev_err(ctrl->dev,
-			"error pinctrl_select_state(%s) err:%d\n",
-			pins_state_name, ret);
+				"error pinctrl_select_state(%s) err:%d\n", pins_state_name, ret);
+			return -ENODATA;
+		} else {
+			if(pinctl_state == I2C_MSM_DFS_DEFAULT){
+				dev_info(ctrl->dev,"i2c msm pins_state is dfs defult\n");
+				for (i = I2C_MSM_DEFAULT_CLK; i < I2C_MSM_DEFAULT_MAX_GPIO; i++) {
+					ret = gpio_request_one(ctrl->gpios[i], GPIOF_OUT_INIT_HIGH, NULL);
+					if (ret) {
+						dev_err(ctrl->dev,
+							"%s: request failed for gpio:%d\n",__func__, ctrl->gpios[i]);
+						return -ENODATA;
+					}
+				}
+			}
+		}
 	} else {
 		dev_err(ctrl->dev,
-			"error pinctrl state-name:'%s' is not configured\n",
-			pins_state_name);
+			"error pinctrl state-name:'%s' is not configured\n", pins_state_name);
+		return -ENODATA;
 	}
+	return 0;
+}
+
+static int i2c_msm_recover_bus_busy(struct i2c_msm_ctrl *ctrl)
+{
+	int ret = 0;
+	int i = 0;
+	int retry = 0;
+	u32 bus_clr, bus_active,status;
+	u32 gpio_bit_data,gpio_bit_clk = 0;
+
+	i2c_msm_pm_flags = ctrl->pwr_state;
+	for(i = 0;i  < I2C_MSM_RECOVERY_BUS_TIMES; i++){
+		dev_info(ctrl->dev, " i2c retry times =%d\n",i);
+		ret = i2c_msm_pm_pinctrl_state(ctrl,I2C_MSM_DFS_DEFAULT);
+		if(ret)
+			return -1;
+		/*if scl is low ,then set high*/
+		gpio_bit_clk = gpio_get_value(ctrl->gpios[I2C_MSM_DEFAULT_CLK]);
+		dev_info(ctrl->dev, " I2C_MSM_DEFAULT_CLK =%d\n",gpio_bit_clk);
+		if(gpio_bit_clk == 0){
+			ret = gpio_direction_output(ctrl->gpios[I2C_MSM_DEFAULT_CLK],1);
+			if(ret < 0) {
+				dev_err(ctrl->dev, "i2c msm gpio_direction_output error\n");
+			}
+		}
+		/*if data is low ,then set high*/
+		gpio_bit_data = gpio_get_value(ctrl->gpios[I2C_MSM_DEFAULT_DATA]);
+		dev_info(ctrl->dev, " I2C_MSM_DEFAULT_DATA =%d\n",gpio_bit_data);
+		if(gpio_bit_data == 0){
+			ret = gpio_direction_output(ctrl->gpios[I2C_MSM_DEFAULT_DATA],1);
+			if(ret < 0) {
+				dev_err(ctrl->dev, "i2c msm gpio_direction_output error\n");
+			}
+		}
+		if(i2c_msm_pm_flags == I2C_MSM_PM_RT_ACTIVE) {
+			i2c_msm_pm_pinctrl_state(ctrl, I2C_MSM_PM_RT_ACTIVE);
+		} else if(i2c_msm_pm_flags == I2C_MSM_PM_RT_SUSPENDED) {
+			i2c_msm_pm_pinctrl_state(ctrl, I2C_MSM_PM_RT_SUSPENDED);
+		}
+		for (ret = I2C_MSM_DEFAULT_CLK; ret < I2C_MSM_DEFAULT_MAX_GPIO; ret++) {
+			gpio_free(ctrl->gpios[ret]);
+		}
+		if((gpio_bit_data == 1) && (gpio_bit_clk == 1)){
+			usleep(5);
+			dev_info(ctrl->dev, " Successful set sda and scl high, times =%d\n",i);
+			dev_info(ctrl->dev, "Executing bus recovery procedure (9 clk pulse)\n");
+			do {
+				qup_i2c_recover_bus_busy(ctrl);
+				bus_clr    = readl_relaxed(ctrl->rsrcs.base + QUP_I2C_MASTER_BUS_CLR);
+				status     = readl_relaxed(ctrl->rsrcs.base + QUP_I2C_STATUS);
+				bus_active = status & I2C_STATUS_BUS_ACTIVE;
+				if (++retry >= I2C_MSM_RECOVERY_BUS_TIMES)
+					break;
+			} while (bus_clr || bus_active);
+			dev_info(ctrl->dev, "Bus recovery %s after %d retries\n",
+					(bus_clr || bus_active) ? "fail" : "success", retry);
+			break;
+		}
+	}
+	return 0;
 }
 
 /*
@@ -2663,7 +2764,7 @@ static void i2c_msm_pm_suspend(struct device *dev)
 		return;
 	}
 	i2c_msm_dbg(ctrl, MSM_DBG, "suspending...");
-	i2c_msm_pm_pinctrl_state(ctrl, false);
+	i2c_msm_pm_pinctrl_state(ctrl, I2C_MSM_DFS_SUSPEND);
 	i2c_msm_clk_path_unvote(ctrl);
 
 	/*
@@ -2690,7 +2791,7 @@ static int i2c_msm_pm_resume(struct device *dev)
 	i2c_msm_dbg(ctrl, MSM_DBG, "resuming...");
 
 	i2c_msm_clk_path_vote(ctrl);
-	i2c_msm_pm_pinctrl_state(ctrl, true);
+	i2c_msm_pm_pinctrl_state(ctrl, I2C_MSM_DFS_ACTIVE);
 	ctrl->pwr_state = I2C_MSM_PM_RT_ACTIVE;
 	return 0;
 }
@@ -2887,7 +2988,7 @@ static int i2c_msm_probe(struct platform_device *pdev)
 	i2c_msm_pm_clk_disable_unprepare(ctrl);
 	i2c_msm_clk_path_unvote(ctrl);
 
-	ret = i2c_msm_rsrcs_gpio_pinctrl_init(ctrl);
+	ret = i2c_msm_rsrcs_gpio_pinctrl_init(ctrl, pdev);
 	if (ret)
 		goto err_no_pinctrl;
 
