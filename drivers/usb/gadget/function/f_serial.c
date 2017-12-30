@@ -25,6 +25,10 @@
 #include "gadget_chips.h"
 #include "usb_gadget_xport.h"
 
+#ifdef CONFIG_HUAWEI_USB
+#include <linux/usb/huawei_usb.h>
+#endif
+
 
 /*
  * This function packages a simple "generic serial" port with no real
@@ -106,6 +110,21 @@ static long gser_ioctl(struct file *fp, unsigned cmd, unsigned long arg);
 static void gser_ioctl_set_transport(struct f_gser *gser,
 				unsigned int transport);
 
+#ifdef CONFIG_HUAWEI_USB
+static unsigned char usb_if_protocol_table[GSERIAL_NO_PORTS] = {
+	USB_IF_PROTOCOL_HW_MODEM, /* hw modem interface */
+	USB_IF_PROTOCOL_HW_PCUI,  /* hw PCUI for AT command */
+	USB_IF_PROTOCOL_NOPNP
+};
+
+static unsigned char ACM_GET_TYPE(unsigned int port_num)
+{
+	if (port_num < GSERIAL_NO_PORTS) {
+		return usb_if_protocol_table[port_num];
+	}
+	return (unsigned char)USB_IF_PROTOCOL_NOPNP;
+}
+#endif
 
 static const struct file_operations gser_fops = {
 	.owner = THIS_MODULE,
@@ -142,10 +161,17 @@ static struct usb_interface_descriptor gser_interface_desc = {
 	.bDescriptorType =	USB_DT_INTERFACE,
 	/* .bInterfaceNumber = DYNAMIC */
 	.bNumEndpoints =	3,
+#ifndef CONFIG_HUAWEI_USB
 	.bInterfaceClass =	USB_CLASS_VENDOR_SPEC,
 	.bInterfaceSubClass =	0,
 	.bInterfaceProtocol =	0,
 	/* .iInterface = DYNAMIC */
+#else
+	.bInterfaceClass =	USB_IF_CLASS_HW_PNP21,
+	.bInterfaceSubClass =	USB_IF_SUBCLASS_HW_PNP21,
+	.bInterfaceProtocol =	0,
+	/* .iInterface = DYNAMIC */
+#endif
 };
 
 static struct usb_cdc_header_desc gser_header_desc  = {
@@ -895,6 +921,10 @@ static int gser_bind(struct usb_configuration *c, struct usb_function *f)
 		goto fail;
 	gser->data_id = status;
 	gser_interface_desc.bInterfaceNumber = status;
+
+#ifdef CONFIG_HUAWEI_USB
+	gser_interface_desc.bInterfaceProtocol = ACM_GET_TYPE(gser->port_num);
+#endif
 
 	status = -ENODEV;
 

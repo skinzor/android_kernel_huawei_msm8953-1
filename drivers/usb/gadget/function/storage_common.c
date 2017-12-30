@@ -233,7 +233,15 @@ int fsg_lun_open(struct fsg_lun *curlun, const char *filename)
 		rc = (int) size;
 		goto out;
 	}
-
+#ifdef CONFIG_HUAWEI_USB
+	if (inode->i_bdev) {
+		blksize = bdev_logical_block_size(inode->i_bdev);
+		blkbits = blksize_bits(blksize);
+	} else {
+		blksize = 512;
+		blkbits = 9;
+	}
+#else
 	if (curlun->cdrom) {
 		blksize = 2048;
 		blkbits = 11;
@@ -244,9 +252,10 @@ int fsg_lun_open(struct fsg_lun *curlun, const char *filename)
 		blksize = 512;
 		blkbits = 9;
 	}
-
+#endif
 	num_sectors = size >> blkbits; /* File size in logic-block-size blocks */
 	min_sectors = 1;
+#ifndef CONFIG_HUAWEI_USB
 	if (curlun->cdrom) {
 		min_sectors = 300;	/* Smallest track is 300 frames */
 		if (num_sectors >= 256*60*75) {
@@ -256,6 +265,7 @@ int fsg_lun_open(struct fsg_lun *curlun, const char *filename)
 					(int) num_sectors);
 		}
 	}
+#endif
 	if (num_sectors < min_sectors) {
 		LINFO(curlun, "file too small: %s\n", filename);
 		rc = -ETOOSMALL;
@@ -480,6 +490,19 @@ ssize_t fsg_store_file(struct fsg_lun *curlun, struct rw_semaphore *filesem,
 
 	/* Load new medium */
 	down_write(filesem);
+#ifdef CONFIG_HUAWEI_USB
+	if (curlun->cdrom && fsg_lun_is_open(curlun)) {
+		printk("%s: is cdrom and already opened, ignore\n", __func__);
+	} else if (count > 0 && buf[0]) {
+		/* fsg_lun_open() will close existing file if any. */
+		rc = fsg_lun_open(curlun, buf);
+		if (rc == 0)
+			curlun->unit_attention_data = SS_NOT_READY_TO_READY_TRANSITION;
+	} else if (fsg_lun_is_open(curlun)) {
+		fsg_lun_close(curlun);
+		curlun->unit_attention_data = SS_MEDIUM_NOT_PRESENT;
+	}
+#else
 	if (count > 0 && buf[0]) {
 		/* fsg_lun_open() will close existing file if any. */
 		rc = fsg_lun_open(curlun, buf);
@@ -490,6 +513,7 @@ ssize_t fsg_store_file(struct fsg_lun *curlun, struct rw_semaphore *filesem,
 		fsg_lun_close(curlun);
 		curlun->unit_attention_data = SS_MEDIUM_NOT_PRESENT;
 	}
+#endif
 	up_write(filesem);
 	return (rc < 0 ? rc : count);
 }
