@@ -1520,6 +1520,10 @@ static int tsens_tz_get_temp(struct thermal_zone_device *thermal,
 	if (rc)
 		return rc;
 
+#ifdef CONFIG_HLTHERM_RUNTEST
+	*temp = 300;
+#endif
+
 	idx = tmdev->sensor_dbg_info[tm_sensor->sensor_hw_num].idx;
 	tmdev->sensor_dbg_info[tm_sensor->sensor_hw_num].temp[idx%10] = *temp;
 	tmdev->sensor_dbg_info[tm_sensor->sensor_hw_num].time_stmp[idx%10] =
