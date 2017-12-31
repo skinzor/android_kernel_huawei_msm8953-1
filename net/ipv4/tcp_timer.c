@@ -22,6 +22,13 @@
 #include <linux/gfp.h>
 #include <net/tcp.h>
 
+#ifdef CONFIG_HW_WIFIPRO
+#include "wifipro_tcp_monitor.h"
+#endif
+#ifdef CONFIG_HW_WIFI
+ #include "wifi_tcp_statistics.h"
+#endif
+
 int sysctl_tcp_syn_retries __read_mostly = TCP_SYN_RETRIES;
 int sysctl_tcp_synack_retries __read_mostly = TCP_SYNACK_RETRIES;
 int sysctl_tcp_keepalive_time __read_mostly = TCP_KEEPALIVE_TIME;
@@ -31,6 +38,22 @@ int sysctl_tcp_retries1 __read_mostly = TCP_RETR1;
 int sysctl_tcp_retries2 __read_mostly = TCP_RETR2;
 int sysctl_tcp_orphan_retries __read_mostly;
 int sysctl_tcp_thin_linear_timeouts __read_mostly;
+
+#ifdef CONFIG_HUAWEI_MSS_AUTO_CHANGE
+#define TCP_MSS_REDUCE_SIZE (200)
+#define TCP_MSS_MIN_SIZE    (1200)
+void tcp_reduce_mss(struct inet_connection_sock *icsk, struct sock *sk)
+{
+    struct tcp_sock *tp = NULL;
+    if(icsk && sk) {
+        tp = tcp_sk(sk);
+        if(tp && tp->mss_cache > TCP_MSS_MIN_SIZE && tp->rx_opt.mss_clamp > TCP_MSS_MIN_SIZE) {
+            tp->rx_opt.mss_clamp = tp->mss_cache - TCP_MSS_REDUCE_SIZE;
+            tcp_sync_mss(sk, icsk->icsk_pmtu_cookie);
+        }
+    }
+}
+#endif
 
 /*Function to reset tcp_ack related sysctl on resetting master control */
 void set_tcp_default(void)
@@ -208,7 +231,9 @@ static int tcp_write_timeout(struct sock *sk)
 		if (retransmits_timed_out(sk, sysctl_tcp_retries1, 0, 0)) {
 			/* Black hole detection */
 			tcp_mtu_probing(icsk, sk);
-
+#ifdef CONFIG_HUAWEI_MSS_AUTO_CHANGE
+            tcp_reduce_mss(icsk, sk);
+#endif
 			dst_negative_advice(sk);
 		}
 
@@ -487,7 +512,14 @@ void tcp_retransmit_timer(struct sock *sk)
 	 */
 	icsk->icsk_backoff++;
 	icsk->icsk_retransmits++;
-
+#ifdef CONFIG_HW_WIFIPRO
+    if (is_wifipro_on) {
+        wifipro_handle_retrans(sk, icsk);
+    }
+#endif
+#ifdef CONFIG_HW_WIFI
+	wifi_IncrReSendSegs(sk, 1);
+#endif
 out_reset_timer:
 	/* If stream is thin, use linear timeouts. Since 'icsk_backoff' is
 	 * used to reset timer, set to 0. Recalculate 'icsk_rto' as this
