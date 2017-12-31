@@ -707,6 +707,7 @@ EXPORT_SYMBOL(do_gettimeofday);
  *
  * Sets the time of day to the new time and update NTP and notify hrtimers
  */
+void boot_ats_task_wakeup(void);
 int do_settimeofday(const struct timespec *tv)
 {
 	struct timekeeper *tk = &tk_core.timekeeper;
@@ -737,6 +738,8 @@ int do_settimeofday(const struct timespec *tv)
 
 	/* signal hrtimers about time change */
 	clock_was_set();
+
+    boot_ats_task_wakeup();
 
 	return 0;
 }
