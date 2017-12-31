@@ -1368,6 +1368,11 @@ static void setup_vmalloc_vm(struct vm_struct *vm, struct vmap_area *va,
 	vm->addr = (void *)va->va_start;
 	vm->size = va->va_end - va->va_start;
 	vm->caller = caller;
+#ifdef CONFIG_DEBUG_VMALLOC
+	vm->pid = current->pid;
+	memset(vm->task_name, 0, TASK_COMM_LEN);
+	memcpy(vm->task_name, current->comm, TASK_COMM_LEN - 1);
+#endif
 	va->vm = vm;
 	va->flags |= VM_VM_AREA;
 	spin_unlock(&vmap_area_lock);
@@ -1665,6 +1670,11 @@ static void *__vmalloc_area_node(struct vm_struct *area, gfp_t gfp_mask,
 		pages = kmalloc_node(array_size, nested_gfp, node);
 	}
 	area->pages = pages;
+#ifdef CONFIG_DEBUG_VMALLOC
+	area->pid = current->pid;
+	memset(area->task_name, 0, TASK_COMM_LEN);
+	memcpy(area->task_name, current->comm, TASK_COMM_LEN - 1);
+#endif
 	if (!area->pages) {
 		remove_vm_area(area->addr);
 		kfree(area);
@@ -2723,6 +2733,14 @@ static int s_show(struct seq_file *m, void *p)
 
 	if (v->flags & VM_LOWMEM)
 		seq_puts(m, " lowmem");
+
+#ifdef CONFIG_DEBUG_VMALLOC
+	if (v->pid)
+		seq_printf(m, " pid=%d", v->pid);
+
+	if (v->task_name)
+		seq_printf(m, " task name=%s", v->task_name);
+#endif
 
 	show_numa_info(m, v);
 	seq_putc(m, '\n');
