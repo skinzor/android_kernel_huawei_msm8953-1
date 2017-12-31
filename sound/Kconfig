@@ -132,3 +132,10 @@ config AC97_BUS
 	  sound subsystem and other function drivers completely unrelated to
 	  sound although they're sharing the AC97 bus. Concerned drivers
 	  should "select" this.
+
+config HW_AUDIO_INFO
+	tristate "set audio info for self adapt"
+	default n
+	help
+	  This is used to some audio self adatper configuration.
+

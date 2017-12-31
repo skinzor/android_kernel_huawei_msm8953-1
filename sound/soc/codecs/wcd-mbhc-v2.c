@@ -9,6 +9,8 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  */
+#define DEBUG
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -29,6 +31,7 @@
 #include <sound/jack.h>
 #include "wcd-mbhc-v2.h"
 #include "wcdcal-hwdep.h"
+#include <sound/hw_audio_info.h>
 
 #define WCD_MBHC_JACK_MASK (SND_JACK_HEADSET | SND_JACK_OC_HPHL | \
 			   SND_JACK_OC_HPHR | SND_JACK_LINEOUT | \
@@ -39,6 +42,10 @@
 				  SND_JACK_BTN_2 | SND_JACK_BTN_3 | \
 				  SND_JACK_BTN_4 | SND_JACK_BTN_5 | \
 				  SND_JACK_BTN_6 | SND_JACK_BTN_7)
+
+/* mask for 3 buttons (media/vol+/vol-)*/
+#define WCD_SUPPORTED_BUTTON_MASK (SND_JACK_BTN_0 | SND_JACK_BTN_2 | SND_JACK_BTN_3)
+
 #define OCP_ATTEMPT 1
 #define HS_DETECT_PLUG_TIME_MS (3 * 1000)
 #define SPECIAL_HS_DETECT_TIME_MS (2 * 1000)
@@ -59,6 +66,29 @@ static int det_extn_cable_en;
 module_param(det_extn_cable_en, int,
 		S_IRUGO | S_IWUSR | S_IWGRP);
 MODULE_PARM_DESC(det_extn_cable_en, "enable/disable extn cable detect");
+static unsigned long timeout_jiffies = 0;
+static bool ispress = false;
+struct hph_btn {
+	bool hph_insert_status;
+	bool btn_press_first;
+	bool btn_reported;
+	bool btn_long_press;
+	int  elec_irq_count;
+	unsigned long irq_former_time;
+};
+static struct hph_btn vol_up_hph_btn = {0};
+/*time interval when triggerd electric irq, this value got from the logs*/
+#define ELEC_IRQ_TRIGGER_TIME  30
+/*report first button delay these ms*/
+#define BTN_REPORT_DELAY_TIME  900
+/*interval 60ms means release the btn*/
+#define ELEC_IRQ_TIME_INTERVAL 100
+/*after press btn val*50ms, report*/
+#define BTN_TIME_INTERVAL_NUM  (150/ELEC_IRQ_TRIGGER_TIME)
+/*if not release btn report long btn again*/
+#define BTN_LONG_PRESS_TIME    (900/ELEC_IRQ_TRIGGER_TIME)
+
+static bool g_enable_headset_compatible = true;
 
 enum wcd_mbhc_cs_mb_en_flag {
 	WCD_MBHC_EN_CS = 0,
@@ -67,9 +97,29 @@ enum wcd_mbhc_cs_mb_en_flag {
 	WCD_MBHC_EN_NONE,
 };
 
+#define ANDROID_BOOT_MODE_FAC  "factory"
+#define ANDROID_BOOT_MODE_FLAG "androidboot.huawei_swtype="
+static bool is_bootmode_factory = false;
+static int __init get_androidboot_mode(char *str)
+{
+	if (0 == strncmp(str, ANDROID_BOOT_MODE_FAC, sizeof(ANDROID_BOOT_MODE_FAC))) {
+		is_bootmode_factory = true;
+		pr_info("%s: now in factory mode, mbhc not output swap & hph type...\n", __func__);
+	} else {
+		is_bootmode_factory = false;
+		pr_info("%s: now in normal mode, mbhc can output swap & hph type...\n", __func__);
+	}
+
+	return 1;
+}
+__setup(ANDROID_BOOT_MODE_FLAG, get_androidboot_mode);
+
 static void wcd_mbhc_jack_report(struct wcd_mbhc *mbhc,
 				struct snd_soc_jack *jack, int status, int mask)
 {
+	/* for LINEOUT we do not report to userspace */
+	if (g_enable_headset_compatible)
+		status &= ~SND_JACK_LINEOUT;
 	snd_soc_jack_report(jack, status, mask);
 }
 
@@ -554,6 +604,20 @@ static void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
 				enum snd_jack_types jack_type)
 {
 	WCD_MBHC_RSC_ASSERT_LOCKED(mbhc);
+	if (insertion) {
+		/*timeout after 500ms*/
+		timeout_jiffies = jiffies + msecs_to_jiffies(DSM_AUDIO_LESS_HS_GAP);
+	} else {
+		if (time_before(jiffies, timeout_jiffies)) {
+			if (ispress)
+				audio_dsm_report_num(DSM_AUDIO_HANDSET_PRESS_RELEASE_ERROR,
+							DSM_AUDIO_MESG_PRESS_RELEASE_ERROR);
+			else
+				audio_dsm_report_num(DSM_AUDIO_HANDSET_PLUG_RELEASE_ERROR,
+							DSM_AUDIO_MESG_INSURT_TIME_SHORT);
+		}
+	}
+	ispress = false;
 
 	pr_debug("%s: enter insertion %d hph_status %x\n",
 		 __func__, insertion, mbhc->hph_status);
@@ -680,6 +744,10 @@ static void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
 			(mbhc->mbhc_cfg->linein_th != 0)) {
 				mbhc->mbhc_cb->compute_impedance(mbhc,
 						&mbhc->zl, &mbhc->zr);
+			pr_debug("%s: RL %d ohm, RR %d ohm\n", __func__, mbhc->zl, mbhc->zr);
+			if (g_enable_headset_compatible) {
+				/*when use compatible, do not check 3 pole lineout type*/
+			} else
 			if ((mbhc->zl > mbhc->mbhc_cfg->linein_th &&
 				mbhc->zl < MAX_IMPED) &&
 				(mbhc->zr > mbhc->mbhc_cfg->linein_th &&
@@ -1203,7 +1271,13 @@ static void wcd_correct_swch_plug(struct work_struct *work)
 		plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
 		pr_debug("%s: Plug found, plug type is %d\n",
 			 __func__, plug_type);
-		goto correct_plug_type;
+
+	if (is_bootmode_factory
+		&& ((MBHC_PLUG_TYPE_HIGH_HPH == plug_type) ||
+			(MBHC_PLUG_TYPE_GND_MIC_SWAP == plug_type))) {
+			pr_info("%s: force the type change to headset from %d\n", __func__, plug_type);
+			plug_type = MBHC_PLUG_TYPE_HEADSET;
+	    }
 	}
 
 	if ((plug_type == MBHC_PLUG_TYPE_HEADSET ||
@@ -1299,10 +1373,17 @@ correct_plug_type:
 					 * This is due to GND/MIC switch didn't
 					 * work,  Report unsupported plug.
 					 */
-					pr_debug("%s: switch didnt work\n",
+					if (g_enable_headset_compatible) {
+						pr_debug("%s: switch didnt work, modify swap to hph\n",
 						  __func__);
-					plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
-					goto report;
+						plug_type = MBHC_PLUG_TYPE_HIGH_HPH;
+						goto report_swap;
+					} else {
+						pr_debug("%s: switch didnt work\n",
+						  __func__);
+						plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
+						goto report;
+					}
 				} else {
 					plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
 				}
@@ -1382,6 +1463,7 @@ correct_plug_type:
 		goto enable_supply;
 	}
 
+report_swap:
 	if (plug_type == MBHC_PLUG_TYPE_HIGH_HPH &&
 		(!det_extn_cable_en)) {
 		if (wcd_is_special_headset(mbhc)) {
@@ -1397,6 +1479,12 @@ report:
 		pr_debug("%s: Switch level is low\n", __func__);
 		goto exit;
 	}
+
+	if (MBHC_PLUG_TYPE_INVALID == plug_type) {
+		audio_dsm_report_num(DSM_AUDIO_HANDSET_DECT_FAIL_ERROR_NO,
+							DSM_AUDIO_MESG_HS_TYPE_DECT_FAIL);
+	}
+
 	if (plug_type == MBHC_PLUG_TYPE_GND_MIC_SWAP && mbhc->btn_press_intr) {
 		pr_debug("%s: insertion of headphone with swap\n", __func__);
 		wcd_cancel_btn_work(mbhc);
@@ -1405,6 +1493,12 @@ report:
 	pr_debug("%s: Valid plug found, plug type %d wrk_cmpt %d btn_intr %d\n",
 			__func__, plug_type, wrk_complete,
 			mbhc->btn_press_intr);
+	if (is_bootmode_factory
+		&& ((MBHC_PLUG_TYPE_HIGH_HPH == plug_type) ||
+			(MBHC_PLUG_TYPE_GND_MIC_SWAP == plug_type))) {
+			pr_info("%s: force the type change to headset from %d\n", __func__, plug_type);
+			plug_type = MBHC_PLUG_TYPE_HEADSET;
+	}
 	WCD_MBHC_RSC_LOCK(mbhc);
 	wcd_mbhc_find_plug_and_report(mbhc, plug_type);
 	WCD_MBHC_RSC_UNLOCK(mbhc);
@@ -1583,6 +1677,8 @@ static void wcd_mbhc_swch_irq_handler(struct wcd_mbhc *mbhc)
 						 1);
 			WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_ELECT_SCHMT_ISRC, 0);
 			wcd_mbhc_report_plug(mbhc, 0, SND_JACK_LINEOUT);
+			vol_up_hph_btn.hph_insert_status = false;
+			vol_up_hph_btn.elec_irq_count = 0;
 		} else if (mbhc->current_plug == MBHC_PLUG_TYPE_ANC_HEADPHONE) {
 			mbhc->mbhc_cb->irq_control(codec,
 					mbhc->intr_ids->mbhc_hs_rem_intr,
@@ -1662,8 +1758,170 @@ static int wcd_mbhc_get_button_mask(struct wcd_mbhc *mbhc)
 	default:
 		break;
 	}
+	pr_debug("%s: press btn %d leave\n", __func__, btn);
+	/* just support 3 buttons */
+	return (mask & WCD_SUPPORTED_BUTTON_MASK);
+}
 
-	return mask;
+static int wcd_cancel_vol_btn_work(struct wcd_mbhc *mbhc)
+{
+	int r;
+
+	if (!g_enable_headset_compatible)
+		return 0;
+
+	if (NULL == mbhc)
+		return 0;
+
+	r = cancel_delayed_work_sync(&mbhc->btn_take_pic_dwork);
+	/*
+	 * if scheduled dwork is canceled from here,
+	 * we have to unlock from here instead btn_work
+	 */
+	if (r)
+		mbhc->mbhc_cb->lock_sleep(mbhc, false);
+
+	if (vol_up_hph_btn.btn_press_first) {
+		vol_up_hph_btn.hph_insert_status = false;
+		vol_up_hph_btn.btn_press_first = false;
+		vol_up_hph_btn.elec_irq_count = 0;
+	}
+
+	return r;
+}
+
+static void wcd_btn_vol_press_fn(struct work_struct *work)
+{
+	struct delayed_work *dwork;
+	struct wcd_mbhc *mbhc;
+
+	if (NULL == work)
+		return;
+
+	pr_debug("%s: Enter\n", __func__);
+
+	dwork = to_delayed_work(work);
+	mbhc = container_of(dwork, struct wcd_mbhc, btn_take_pic_dwork);
+
+	if (MBHC_PLUG_TYPE_HIGH_HPH == mbhc->current_plug) {
+		/*first btn, report short press */
+		if (vol_up_hph_btn.btn_press_first) {
+			pr_debug("%s: Reporting btn 2 press\n", __func__);
+			wcd_mbhc_jack_report(mbhc, &mbhc->button_jack,
+								SND_JACK_BTN_2, SND_JACK_BTN_2);
+			pr_debug("%s: Reporting btn[0x%x] release\n",
+					__func__, SND_JACK_BTN_2);
+			wcd_mbhc_jack_report(mbhc, &mbhc->button_jack,
+								0, SND_JACK_BTN_2);
+			vol_up_hph_btn.btn_press_first = false;
+		} else { /* this is for long press release */
+			pr_debug("%s: Reporting long btn[0x%x] release\n",
+					__func__, SND_JACK_BTN_2);
+			wcd_mbhc_jack_report(mbhc, &mbhc->button_jack,
+							0, SND_JACK_BTN_2);
+		}
+		vol_up_hph_btn.btn_long_press = false;
+	}
+	pr_debug("%s: leave\n", __func__);
+	mbhc->mbhc_cb->lock_sleep(mbhc, false);
+}
+
+static bool  process_vol_btn_press_for_hph(struct wcd_mbhc *mbhc)
+{
+	unsigned long msec_interval = 0;
+	unsigned long m_seconds = jiffies_to_msecs(jiffies);
+
+	/*if not enable compatible, just return false*/
+	if (!g_enable_headset_compatible)
+		return false;
+	if (NULL == mbhc)
+		return false;
+	if (MBHC_PLUG_TYPE_HIGH_HPH != mbhc->current_plug)
+		return false;
+
+	msec_interval = m_seconds - vol_up_hph_btn.irq_former_time;
+	/*when in fault mode, insert or remove selfpad set to firststate*/
+	if (msec_interval > ELEC_IRQ_TIME_INTERVAL
+		&& vol_up_hph_btn.elec_irq_count < BTN_TIME_INTERVAL_NUM) {
+		pr_info("%s: set to first button state\n", __func__);
+		vol_up_hph_btn.btn_press_first = true;
+	}
+
+	if (!vol_up_hph_btn.hph_insert_status
+	    && (vol_up_hph_btn.elec_irq_count > 0)) {
+		vol_up_hph_btn.hph_insert_status = true;
+		vol_up_hph_btn.btn_press_first = true;
+		vol_up_hph_btn.elec_irq_count = -1;
+		vol_up_hph_btn.btn_reported = false;
+	} else {
+		if (msec_interval > ELEC_IRQ_TIME_INTERVAL) {
+			pr_info("%s: clear irq count(%d)\n", __func__, vol_up_hph_btn.elec_irq_count);
+			vol_up_hph_btn.elec_irq_count = 0;
+			if (!vol_up_hph_btn.btn_press_first) {
+				vol_up_hph_btn.btn_reported = false;
+			}
+		}
+
+		/*first time btn report after BTN_REPORT_DELAY_TIME,
+		* others need BTN_TIME_INTERVAL_NUM*30 ms,
+		* first btn will use a dwork to report,
+		* others report directly here
+		*/
+		if (!vol_up_hph_btn.btn_reported
+			&& vol_up_hph_btn.elec_irq_count >= BTN_TIME_INTERVAL_NUM) {
+			if (vol_up_hph_btn.btn_press_first) {
+				pr_debug("%s: ready to report first btn\n", __func__);
+				mbhc->mbhc_cb->lock_sleep(mbhc, true);
+				if (schedule_delayed_work(&mbhc->btn_take_pic_dwork,
+						msecs_to_jiffies(BTN_REPORT_DELAY_TIME)) == 0) {
+					WARN(1, "Button report twice without release event\n");
+					mbhc->mbhc_cb->lock_sleep(mbhc, false);
+				}
+			} else {
+				pr_debug("%s: Reporting btn 2 press\n", __func__);
+				wcd_mbhc_jack_report(mbhc, &mbhc->button_jack,
+									SND_JACK_BTN_2, SND_JACK_BTN_2);
+				pr_debug("%s: Reporting btn[0x%x] release\n",
+						__func__, SND_JACK_BTN_2);
+				wcd_mbhc_jack_report(mbhc, &mbhc->button_jack,
+									0, SND_JACK_BTN_2);
+			}
+			vol_up_hph_btn.btn_reported = true;
+		} else if (vol_up_hph_btn.btn_reported   /*btn had been pressed*/
+			&& !vol_up_hph_btn.btn_press_first   /*first btn had been report*/
+			&& vol_up_hph_btn.elec_irq_count >=  /*press for enough time*/
+				(BTN_TIME_INTERVAL_NUM + BTN_LONG_PRESS_TIME)) {
+
+			/*report long btn press*/
+			if (!vol_up_hph_btn.btn_long_press) {
+				vol_up_hph_btn.btn_long_press = true;
+				pr_debug("%s: Reporting long btn 2 press\n", __func__);
+				wcd_mbhc_jack_report(mbhc, &mbhc->button_jack,
+							SND_JACK_BTN_2, SND_JACK_BTN_2);
+				mbhc->mbhc_cb->lock_sleep(mbhc, true);
+			}
+
+			/*if reported long press, queue the work to report release,
+			* first time queue the work, other times just modify time
+			*/
+			mod_delayed_work(system_wq,
+						&mbhc->btn_take_pic_dwork,
+						msecs_to_jiffies(ELEC_IRQ_TIME_INTERVAL));
+		}
+	}
+	vol_up_hph_btn.elec_irq_count++;
+	vol_up_hph_btn.irq_former_time = m_seconds;
+	pr_info("%s: reported=%d, irqcount=%d, firstbtn=%d\n",
+			  __func__, vol_up_hph_btn.btn_reported,
+			  vol_up_hph_btn.elec_irq_count,
+			  vol_up_hph_btn.btn_press_first);
+
+	if (vol_up_hph_btn.btn_press_first
+		&& (vol_up_hph_btn.elec_irq_count >
+		(BTN_REPORT_DELAY_TIME/ELEC_IRQ_TRIGGER_TIME))) {
+		return true;
+	}
+	return false;
 }
 
 static irqreturn_t wcd_mbhc_hs_ins_irq(int irq, void *data)
@@ -1721,6 +1979,8 @@ static irqreturn_t wcd_mbhc_hs_ins_irq(int irq, void *data)
 					 __func__);
 				goto determine_plug;
 			}
+			if (process_vol_btn_press_for_hph(mbhc))
+				goto determine_plug;
 		}
 	}
 	WCD_MBHC_RSC_UNLOCK(mbhc);
@@ -1728,6 +1988,9 @@ static irqreturn_t wcd_mbhc_hs_ins_irq(int irq, void *data)
 	return IRQ_HANDLED;
 
 determine_plug:
+	/* cancel pending button press */
+	if (wcd_cancel_vol_btn_work(mbhc))
+		pr_debug("%s: vol+ button press is canceled\n", __func__);
 	/*
 	 * Disable HPHL trigger and MIC Schmitt triggers.
 	 * Setup for insertion detection.
@@ -1859,6 +2122,8 @@ report_unplug:
 	mic_trigerred = 0;
 	WCD_MBHC_RSC_UNLOCK(mbhc);
 	pr_debug("%s: leave\n", __func__);
+	vol_up_hph_btn.hph_insert_status = false;
+	vol_up_hph_btn.elec_irq_count = 0;
 	return IRQ_HANDLED;
 }
 
@@ -1925,6 +2190,15 @@ static irqreturn_t wcd_mbhc_btn_press_handler(int irq, void *data)
 		goto done;
 	}
 	mbhc->btn_press_intr = true;
+	if (time_before(jiffies, timeout_jiffies)) {
+		if (!ispress) {
+			audio_dsm_report_num(DSM_AUDIO_HANDSET_PLUG_PRESS_ERROR,
+								DSM_AUDIO_MESG_PLUG_PRESS_ERROR);
+		}
+	} else {
+		timeout_jiffies = jiffies + msecs_to_jiffies(DSM_AUDIO_LESS_HS_GAP);
+		ispress = true;
+	}
 
 	msec_val = jiffies_to_msecs(jiffies - mbhc->jiffies_atreport);
 	pr_debug("%s: msec_val = %ld\n", __func__, msec_val);
@@ -1953,7 +2227,7 @@ static irqreturn_t wcd_mbhc_btn_press_handler(int irq, void *data)
 		mbhc->mbhc_cb->lock_sleep(mbhc, false);
 	}
 done:
-	pr_debug("%s: leave\n", __func__);
+	pr_debug("%s: press 0x%x leave\n", __func__, mbhc->buttons_pressed);
 	WCD_MBHC_RSC_UNLOCK(mbhc);
 	return IRQ_HANDLED;
 }
@@ -2005,8 +2279,8 @@ static irqreturn_t wcd_mbhc_release_handler(int irq, void *data)
 						     &mbhc->button_jack,
 						     mbhc->buttons_pressed,
 						     mbhc->buttons_pressed);
-				pr_debug("%s: Reporting btn release\n",
-					 __func__);
+				pr_debug("%s: Reporting btn[0x%x] release\n",
+					 __func__, mbhc->buttons_pressed);
 				wcd_mbhc_jack_report(mbhc,
 						&mbhc->button_jack,
 						0, mbhc->buttons_pressed);
@@ -2440,6 +2714,7 @@ int wcd_mbhc_init(struct wcd_mbhc *mbhc, struct snd_soc_codec *codec,
 		INIT_DELAYED_WORK(&mbhc->mbhc_firmware_dwork,
 				  wcd_mbhc_fw_read);
 		INIT_DELAYED_WORK(&mbhc->mbhc_btn_dwork, wcd_btn_lpress_fn);
+		INIT_DELAYED_WORK(&mbhc->btn_take_pic_dwork, wcd_btn_vol_press_fn);
 	}
 	mutex_init(&mbhc->hphl_pa_lock);
 	mutex_init(&mbhc->hphr_pa_lock);

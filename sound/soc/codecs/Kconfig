@@ -440,6 +440,16 @@ config SND_SOC_MAX98090
 config SND_SOC_MAX98095
        tristate
 
+config SND_SOC_MAX98925
+	bool "Support MAX98925 smartpa system"
+	depends on I2C
+	help
+	MAX98925 driver for smartpa system.
+
+config SND_SOC_TFA98XX
+	tristate "NXP TFA98XX smart amplifier"
+	depends on I2C
+
 config SND_SOC_MAX9850
 	tristate
 
