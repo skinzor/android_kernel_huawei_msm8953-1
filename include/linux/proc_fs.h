@@ -42,6 +42,10 @@ extern void proc_remove(struct proc_dir_entry *);
 extern void remove_proc_entry(const char *, struct proc_dir_entry *);
 extern int remove_proc_subtree(const char *, struct proc_dir_entry *);
 
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+extern void exit_proc_reclaim(struct task_struct *tsk);
+#endif
+
 #else /* CONFIG_PROC_FS */
 
 static inline void proc_root_init(void)

@@ -1171,6 +1171,11 @@ struct mm_walk {
 			     struct mm_walk *walk);
 	struct mm_struct *mm;
 	void *private;
+#ifdef CONFIG_HUAWEI_SWAP_ZDATA
+	bool hiber;
+	unsigned nr_reclaimed;
+	unsigned nr_writedblock;
+#endif
 };
 
 int walk_page_range(unsigned long addr, unsigned long end,
@@ -2055,6 +2060,7 @@ static inline struct page *follow_page(struct vm_area_struct *vma,
 #define FOLL_NUMA	0x200	/* force NUMA hinting page fault */
 #define FOLL_MIGRATION	0x400	/* wait for page to replace migration entry */
 #define FOLL_TRIED	0x800	/* a retry, previous pass started an IO */
+#define FOLL_COW	0x4000	/* internal GUP flag */
 
 typedef int (*pte_fn_t)(pte_t *pte, pgtable_t token, unsigned long addr,
 			void *data);
@@ -2193,6 +2199,15 @@ static inline void setup_nr_node_ids(void) {}
 #endif
 
 #ifdef CONFIG_PROCESS_RECLAIM
+enum reclaim_type {
+	RECLAIM_FILE,
+	RECLAIM_ANON,
+	RECLAIM_ALL,
+	RECLAIM_RANGE,
+	RECLAIM_SOFT,
+	RECLAIM_INACTIVE,
+};
+
 struct reclaim_param {
 	struct vm_area_struct *vma;
 	/* Number of pages scanned */
@@ -2201,6 +2216,9 @@ struct reclaim_param {
 	int nr_to_reclaim;
 	/* pages reclaimed */
 	int nr_reclaimed;
+	bool inactive_lru;
+	bool is_task_anon;
+	enum reclaim_type type;
 };
 extern struct reclaim_param reclaim_task_anon(struct task_struct *task,
 		int nr_to_reclaim);

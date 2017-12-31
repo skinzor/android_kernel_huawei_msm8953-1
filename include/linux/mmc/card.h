@@ -16,6 +16,14 @@
 #include <linux/mod_devicetable.h>
 #include <linux/notifier.h>
 
+#ifdef CONFIG_HW_SYSTEM_WR_PROTECT
+#include <linux/genhd.h>
+#endif
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+#define EXT_CSD_PRE_EOL_INFO_NORMAL     0x01
+#define EXT_CSD_PRE_EOL_INFO_WARNING     0x02
+#define EXT_CSD_PRE_EOL_INFO_URGENT     0x03
+#endif
 #define MMC_CARD_CMDQ_BLK_SIZE 512
 
 struct mmc_cid {
@@ -128,12 +136,17 @@ struct mmc_ext_csd {
 #define MMC_BKOPS_URGENCY_MASK 0x3
 	u8			raw_bkops_status;	/* 246 */
 	u8			raw_sectors[4];		/* 212 - 4 bytes */
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+	u8			pre_eol_info;	/* 267 */
+	u8			device_life_time_est_typ_a;	/* 268 */
+	u8			device_life_time_est_typ_b;	/* 269 */
+#endif
 	u8			cmdq_depth;		/* 307 */
 	u8			cmdq_support;		/* 308 */
 	u8			barrier_support;	/* 486 */
 	u8			barrier_en;
 
-	u8			fw_version;		/* 254 */
+	u64			fw_version;		/* 254 - 8 bytes */
 	unsigned int            feature_support;
 #define MMC_DISCARD_FEATURE	BIT(0)                  /* CMD38 feature */
 };
@@ -153,6 +166,7 @@ struct sd_ssr {
 	unsigned int		au;			/* In sectors */
 	unsigned int		erase_timeout;		/* In milliseconds */
 	unsigned int		erase_offset;		/* In milliseconds */
+	unsigned int		speed_class;
 };
 
 struct sd_switch_caps {
@@ -363,6 +377,11 @@ struct mmc_card {
 #define MMC_STATE_SUSPENDED	(1<<6)		/* card is suspended */
 #define MMC_STATE_CMDQ		(1<<12)         /* card is in cmd queue mode */
 #define MMC_STATE_AUTO_BKOPS	(1<<13)		/* card is doing auto BKOPS */
+#ifdef CONFIG_MMC_PASSWORDS
+#define MMC_STATE_LOCKED	(1<<14)		/* card is currently locked */
+#define MMC_STATE_ENCRYPT	(1<<15)		/* card is currently encrypt */
+#endif
+
 	unsigned int		quirks; 	/* card quirks */
 #define MMC_QUIRK_LENIENT_FN0	(1<<0)		/* allow SDIO FN0 writes outside of the VS CCCR range */
 #define MMC_QUIRK_BLKSZ_FOR_BYTE_MODE (1<<1)	/* use func->cur_blksize */
@@ -404,6 +423,11 @@ struct mmc_card {
 	struct sd_scr		scr;		/* extra SD information */
 	struct sd_ssr		ssr;		/* yet more SD information */
 	struct sd_switch_caps	sw_caps;	/* switch (CMD6) caps */
+#ifdef CONFIG_MMC_PASSWORDS
+	bool swith_voltage; 			/* whether sdcard voltage swith to 1.8v  */
+	bool auto_unlock;
+	u8   unlock_pwd[20]; // 1(len) + max_pwd(16) + 0xFF 0xFF + 0 = 20
+#endif
 
 	unsigned int		sdio_funcs;	/* number of SDIO functions */
 	struct sdio_cccr	cccr;		/* common card info */
@@ -576,6 +600,10 @@ static inline void __maybe_unused remove_quirk(struct mmc_card *card, int data)
 #define mmc_card_ext_capacity(c) ((c)->state & MMC_CARD_SDXC)
 #define mmc_card_removed(c)	((c) && ((c)->state & MMC_CARD_REMOVED))
 #define mmc_card_doing_bkops(c)	((c)->state & MMC_STATE_DOING_BKOPS)
+#ifdef CONFIG_MMC_PASSWORDS
+#define mmc_card_locked(c)	((c)->state & MMC_STATE_LOCKED)
+#define mmc_card_encrypt(c)	((c)->state & MMC_STATE_ENCRYPT)
+#endif
 #define mmc_card_suspended(c)	((c)->state & MMC_STATE_SUSPENDED)
 #define mmc_card_cmdq(c)       ((c)->state & MMC_STATE_CMDQ)
 #define mmc_card_doing_auto_bkops(c)	((c)->state & MMC_STATE_AUTO_BKOPS)
@@ -591,6 +619,10 @@ static inline void __maybe_unused remove_quirk(struct mmc_card *card, int data)
 #define mmc_card_clr_suspended(c) ((c)->state &= ~MMC_STATE_SUSPENDED)
 #define mmc_card_set_cmdq(c)           ((c)->state |= MMC_STATE_CMDQ)
 #define mmc_card_clr_cmdq(c)           ((c)->state &= ~MMC_STATE_CMDQ)
+#ifdef CONFIG_MMC_PASSWORDS
+#define mmc_card_set_locked(c)	((c)->state |= MMC_STATE_LOCKED)
+#define mmc_card_set_encrypted(c)	((c)->state |= MMC_STATE_ENCRYPT)
+#endif
 #define mmc_card_set_auto_bkops(c)	((c)->state |= MMC_STATE_AUTO_BKOPS)
 #define mmc_card_clr_auto_bkops(c)	((c)->state &= ~MMC_STATE_AUTO_BKOPS)
 
@@ -721,4 +753,9 @@ extern struct mmc_wr_pack_stats *mmc_blk_get_packed_statistics(
 extern void mmc_blk_init_packed_statistics(struct mmc_card *card);
 extern int mmc_send_pon(struct mmc_card *card);
 extern void mmc_blk_cmdq_req_done(struct mmc_request *mrq);
+#ifdef CONFIG_HW_SYSTEM_WR_PROTECT
+extern struct mmc_blk_data *mmc_blk_get(struct gendisk *disk);
+extern int get_card_status(struct mmc_card *card, u32 *status, int retries);
+extern int mmc_send_csd(struct mmc_card *card, u32 *csd);
+#endif
 #endif /* LINUX_MMC_CARD_H */

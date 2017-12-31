@@ -177,6 +177,20 @@ enum {
 	SMEM_NUM_ITEMS, /* 498 */
 };
 
+typedef struct
+{
+    unsigned int lpddrID;                  /* DDR ID */
+    unsigned int update_flag[2];           /* sd auto update flag */
+#ifdef CONFIG_HUAWEI_DEBUG_MODE
+    unsigned int huawei_debug;
+#endif
+    unsigned int pwrkpd_reset;
+    unsigned int reserved;                  /* reserved for filling */
+	/*AR0005AFIC yuanshuai 20160919 begin */
+	unsigned int sbl1_boottime;
+	/*AR0005AFIC yuanshuai 20160919 begin */
+}smem_exten_huawei_paramater;
+
 #ifdef CONFIG_MSM_SMEM
 void *smem_alloc(unsigned id, unsigned size_in, unsigned to_proc,
 								unsigned flags);

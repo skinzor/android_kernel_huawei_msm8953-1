@@ -396,6 +396,7 @@ enum qpnp_adc_scale_fn_type {
 	SCALE_NCP_03WF683_THERM,
 	SCALE_QRD_SKUT1_BATT_THERM,
 	SCALE_PMI_CHG_TEMP = 16,
+	SCALE_PA_THERM,
 	SCALE_NONE,
 };
 
@@ -1335,6 +1336,25 @@ int32_t qpnp_adc_scale_default(struct qpnp_vadc_chip *dev,
 			const struct qpnp_adc_properties *adc_prop,
 			const struct qpnp_vadc_chan_properties *chan_prop,
 			struct qpnp_vadc_result *chan_rslt);
+
+/**
+ * qpnp_adc_scale_huawei_pa_therm() - Scales the pre-calibrated digital output
+ *		of an ADC to the ADC reference and compensates for the
+ *		gain and offset. Returns the temperature in decidegC.
+ * @dev:	Structure device for qpnp vadc
+ * @adc_code:	pre-calibrated digital output of the ADC.
+ * @adc_prop:	adc properties of the qpnp adc such as bit resolution,
+ *		reference voltage.
+ * @chan_prop:	individual channel properties to compensate the i/p scaling,
+ *		slope and offset.
+ * @chan_rslt:	physical result to be stored.
+ */
+int32_t qpnp_adc_scale_huawei_pa_therm(struct qpnp_vadc_chip *dev,
+			int32_t adc_code,
+			const struct qpnp_adc_properties *adc_prop,
+			const struct qpnp_vadc_chan_properties *chan_prop,
+			struct qpnp_vadc_result *chan_rslt);
+
 /**
  * qpnp_adc_scale_pmic_therm() - Scales the pre-calibrated digital output
  *		of an ADC to the ADC reference and compensates for the
@@ -1868,6 +1888,7 @@ void qpnp_adc_disable_voltage(struct qpnp_adc_drv *adc);
  * @dev:	Structure device for qpnp vadc
  */
 void qpnp_adc_free_voltage_resource(struct qpnp_adc_drv *adc);
+int get_pmi_sub_voltage(void);
 
 #else
 static inline int32_t qpnp_vadc_read(struct qpnp_vadc_chip *dev,
