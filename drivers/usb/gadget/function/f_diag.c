@@ -28,6 +28,10 @@
 #include <linux/debugfs.h>
 #include <linux/kmemleak.h>
 
+#ifdef CONFIG_HUAWEI_USB
+#include <linux/usb/huawei_usb.h>
+#endif
+
 static DEFINE_SPINLOCK(ch_lock);
 static LIST_HEAD(usb_diag_ch_list);
 
@@ -35,9 +39,15 @@ static struct usb_interface_descriptor intf_desc = {
 	.bLength            =	sizeof intf_desc,
 	.bDescriptorType    =	USB_DT_INTERFACE,
 	.bNumEndpoints      =	2,
+#ifndef CONFIG_HUAWEI_USB
 	.bInterfaceClass    =	0xFF,
 	.bInterfaceSubClass =	0xFF,
 	.bInterfaceProtocol =	0xFF,
+#else
+	.bInterfaceClass    =	USB_IF_CLASS_HW_PNP21,
+	.bInterfaceSubClass =	USB_IF_SUBCLASS_HW_PNP21,
+	.bInterfaceProtocol =	USB_IF_PROTOCOL_HW_DIAG,
+#endif
 };
 
 static struct usb_endpoint_descriptor hs_bulk_in_desc = {
@@ -227,6 +237,20 @@ static void diag_write_complete(struct usb_ep *ep,
 	struct diag_context *ctxt = ep->driver_data;
 	struct diag_request *d_req = req->context;
 	unsigned long flags;
+	u8 req_buffer_part_out[17] = {0};
+	strncpy(req_buffer_part_out,(u8 *)req->buf,sizeof(req_buffer_part_out)-1);
+	/* huawei diag log printf */
+	if(( 75 == *((u8 *)req->buf)) && (( 201 == *((u8 *)req->buf+1) )||(200 == *((u8 *)req->buf+1))))
+	{
+       print_hex_dump(KERN_INFO, "[USB_LOGS]Data to usb: ", 8,
+                          1, DUMP_PREFIX_ADDRESS, req_buffer_part_out, 16, 1);
+    }
+	/*printf  7B 00 01 02 03 04 05 06 07 08 09 9D 5F 7E */
+	if(( 123 == *((u8 *)req->buf)) && (0 == *((u8 *)req->buf+1)))
+	{
+       print_hex_dump(KERN_INFO, "[USB_LOGS]Data to usb: ", 8,
+                          1, DUMP_PREFIX_ADDRESS, req_buffer_part_out, 16, 1);
+    }
 
 	ctxt->dpkts_tolaptop_pending--;
 
@@ -267,10 +291,23 @@ static void diag_read_complete(struct usb_ep *ep,
 	struct diag_context *ctxt = ep->driver_data;
 	struct diag_request *d_req = req->context;
 	unsigned long flags;
+	u8 req_buffer_part_in[17] = {0};
 
 	d_req->actual = req->actual;
 	d_req->status = req->status;
-
+	strncpy(req_buffer_part_in,(u8 *)req->buf,sizeof(req_buffer_part_in)-1);
+	/* huawei diag log printf */
+	if(( 75 == *((u8 *)req->buf)) && (( 201 == *((u8 *)req->buf+1) )||(200 == *((u8 *)req->buf+1))))
+	{
+       print_hex_dump(KERN_INFO, "[USB_LOGS]Data from usb: ", 8,
+                          1, DUMP_PREFIX_ADDRESS, req_buffer_part_in, 16, 1);
+    }
+	/*printf  7B 00 01 02 03 04 05 06 07 08 09 9D 5F 7E */
+	if(( 123 == *((u8 *)req->buf)) && (0 == *((u8 *)req->buf+1)))
+	{
+       print_hex_dump(KERN_INFO, "[USB_LOGS]Data from usb: ", 8,
+                          1, DUMP_PREFIX_ADDRESS, req_buffer_part_in, 16, 1);
+    }
 	spin_lock_irqsave(&ctxt->lock, flags);
 	list_add_tail(&req->list, &ctxt->read_pool);
 	spin_unlock_irqrestore(&ctxt->lock, flags);

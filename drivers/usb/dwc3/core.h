@@ -969,6 +969,7 @@ struct dwc3 {
 	atomic_t		in_lpm;
 	int			tx_fifo_size;
 	bool			b_suspend;
+	bool			no_set_vbus_power;
 	unsigned		vbus_draw;
 
 	/* IRQ timing statistics */
