@@ -613,12 +613,17 @@ static ssize_t show_scaling_governor(struct cpufreq_policy *policy, char *buf)
 /**
  * store_scaling_governor - store policy for the specified CPU
  */
+extern bool cbt_mode;
+
 static ssize_t store_scaling_governor(struct cpufreq_policy *policy,
 					const char *buf, size_t count)
 {
 	int ret;
 	char	str_governor[16];
 	struct cpufreq_policy new_policy;
+
+	if (cbt_mode)
+		return 0;
 
 	ret = cpufreq_get_policy(&new_policy, policy->cpu);
 	if (ret)
@@ -961,6 +966,7 @@ static int cpufreq_add_dev_interface(struct cpufreq_policy *policy,
 	return ret;
 }
 
+extern struct cpufreq_governor cpufreq_gov_powersave;
 static void cpufreq_init_policy(struct cpufreq_policy *policy)
 {
 	struct cpufreq_governor *gov = NULL;
@@ -988,6 +994,9 @@ static void cpufreq_init_policy(struct cpufreq_policy *policy)
 				policy->governor->name, policy->cpu);
 	else
 		gov = CPUFREQ_DEFAULT_GOVERNOR;
+
+	if (cbt_mode)
+		gov = (&cpufreq_gov_powersave);
 
 	new_policy.governor = gov;
 
