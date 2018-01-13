@@ -388,6 +388,13 @@ static void adreno_input_work(struct work_struct *work)
 	mutex_unlock(&device->mutex);
 }
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+void adreno_force_waking_gpu()
+{
+	schedule_work(&device_3d0.input_work);
+}
+#endif
+
 /*
  * Process input events and schedule work if needed.  At this point we are only
  * interested in groking EV_ABS touchscreen events
