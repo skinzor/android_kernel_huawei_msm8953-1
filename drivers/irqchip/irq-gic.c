@@ -42,6 +42,8 @@
 #include <linux/irqchip/arm-gic.h>
 #include <linux/syscore_ops.h>
 #include <linux/msm_rtb.h>
+#include <linux/hw_power_monitor.h>
+#include <linux/wakeup_reason.h>
 
 #include <asm/cputype.h>
 #include <asm/irq.h>
@@ -256,7 +258,11 @@ void gic_show_pending_irq(void)
 		}
 	}
 }
-
+#ifdef CONFIG_WIFI_WAKE_SRC
+#define WCNSS_WLAN_RX_DATA_AVAIL 178
+volatile bool g_wifi_firstwake = false;
+EXPORT_SYMBOL(g_wifi_firstwake);
+#endif
 static void gic_show_resume_irq(struct gic_chip_data *gic)
 {
 	unsigned int i;
@@ -287,9 +293,16 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
 			name = "stray irq";
 		else if (desc->action && desc->action->name)
 			name = desc->action->name;
-
+#ifdef CONFIG_WIFI_WAKE_SRC			
+		if(WCNSS_WLAN_RX_DATA_AVAIL == (i + gic->irq_offset)){
+		    g_wifi_firstwake = true;
+			pr_warning("%s: triggered by wcnss\n", __func__);
+		}
+#endif
+                power_monitor_report(WAKEUP_IRQ, "%s",name);
 		pr_warning("%s: %d triggered %s\n", __func__,
 					i + gic->irq_offset, name);
+		log_wakeup_reason(irq);
 	}
 }
 
