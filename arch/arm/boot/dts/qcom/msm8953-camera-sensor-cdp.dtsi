@@ -22,6 +22,7 @@
 		qcom,cam-vreg-min-voltage = <2850000>;
 		qcom,cam-vreg-max-voltage = <2850000>;
 		qcom,cam-vreg-op-mode = <80000>;
+		status = "disabled";
 	};
 
 	actuator1: qcom,actuator@1 {
@@ -34,6 +35,7 @@
 		qcom,cam-vreg-min-voltage = <2850000>;
 		qcom,cam-vreg-max-voltage = <2850000>;
 		qcom,cam-vreg-op-mode = <80000>;
+		status = "disabled";
 	};
 
 	eeprom0: qcom,eeprom@0 {
@@ -67,7 +69,7 @@
 			"CAM_RESET0",
 			"CAM_STANDBY0",
 			"CAM_VANA";
-		status = "ok";
+		status = "disabled";
 		clocks = <&clock_gcc clk_mclk0_clk_src>,
 				<&clock_gcc clk_gcc_camss_mclk0_clk>;
 		clock-names = "cam_src_clk", "cam_clk";
@@ -152,7 +154,7 @@
 		qcom,sensor-position = <0>;
 		qcom,sensor-mode = <0>;
 		qcom,cci-master = <0>;
-		status = "ok";
+		status = "disabled";
 		clocks = <&clock_gcc clk_mclk0_clk_src>,
 				<&clock_gcc clk_gcc_camss_mclk0_clk>;
 		clock-names = "cam_src_clk", "cam_clk";
@@ -238,7 +240,7 @@
 		qcom,sensor-position = <1>;
 		qcom,sensor-mode = <0>;
 		qcom,cci-master = <1>;
-		status = "ok";
+		status = "disabled";
 		clocks = <&clock_gcc clk_mclk1_clk_src>,
 			<&clock_gcc clk_gcc_camss_mclk1_clk>;
 		clock-names = "cam_src_clk", "cam_clk";

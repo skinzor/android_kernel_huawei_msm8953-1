@@ -260,6 +260,8 @@
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
 			qcom,init-voltage = <1800000>;
+			qcom,pull-down-enable = <1>;
+			qcom,consumer-supplies = "custom_l16", "";
 			status = "okay";
 		};
 	};
@@ -916,6 +918,7 @@
 		enable-active-high;
 		gpio = <&tlmm 50 0>;
 		regulator-always-on;
+		status = "disable";
 	};
 
 	adv_vreg: adv_vreg {
