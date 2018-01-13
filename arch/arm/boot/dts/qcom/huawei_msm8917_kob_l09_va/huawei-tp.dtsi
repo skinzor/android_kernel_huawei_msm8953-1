@@ -1,0 +1,124 @@
+&tlmm {
+        cyttsp5_int_active: cyttsp5_int_active{
+                        mux {
+                                pins = "gpio65";
+                                function =  "gpio";
+                        };
+                        config {
+                                pins = "gpio65";
+                                num-grp-pins = <1>;
+                                drive-strength = <6>;
+                                bias-disable;
+                };
+        };
+        cyttsp5_int_sleep: cyttsp5_int_sleep {
+                        mux {
+                                pins = "gpio65";
+                                function =  "gpio";
+                        };
+                        config {
+                                pins = "gpio65";
+                                num-grp-pins = <1>;
+                                drive-strength = <2>;
+                                bias-disable;
+                };
+        };
+        cyttsp5_rst_active: cyttsp5_rst_active {
+                        mux {
+                                pins = "gpio64";
+                                function =  "gpio";
+                        };
+                        config {
+                                pins = "gpio64";
+                                num-grp-pins = <1>;
+                                drive-strength = <6>;
+                                bias-disable;
+                        };
+                };
+        cyttsp5_rst_sleep: cyttsp5_rst_sleep {
+                        mux {
+                                pins = "gpio64";
+                                function =  "gpio";
+                        };
+                        config {
+                                pins = "gpio64";
+                                num-grp-pins = <1>;
+                                drive-strength = <2>;
+                                bias-disable;
+                };
+        };
+};
+&pm8917_l10 {
+	regulator-max-microvolt = <3100000>;
+};
+&soc {
+	i2c@78b7000 { /* i2c_3 */ /* BLSP1 QUP5 */
+		status = "ok";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		qcom,clk-freq-out = <400000>;
+		/delete-node/focaltech@38;
+		cyttsp5@24 {
+			compatible = "cy,cyttsp5_i2c_adapter";
+			reg = <0x24>;
+			pinctrl-names = "cyttsp5_active","cyttsp5_sleep";
+			pinctrl-0 = <&cyttsp5_int_active &cyttsp5_rst_active>;
+			pinctrl-1 = <&cyttsp5_int_sleep &cyttsp5_rst_sleep>;
+			interrupt-parent = <&tlmm>;
+			interrupts = <65 0x2008>;
+			cy,adapter_id = "cyttsp5_i2c_adapter";
+			vdd-supply = <&pm8917_l10>;  /* AVDD  */
+			vcc_i2c-supply = <&pm8917_l6>;  /* DVDD  */
+			cy,core {
+				cy,name = "cyttsp5_core";
+				cy,product_name = "KOBE";
+				cy,chip_name = "CS448";
+				cy,irq-gpio = <&tlmm 65 0x2008>;
+				cy,reset-gpio = <&tlmm 64 0x0>;
+				cy,vdd-type = <2>;	/* 0:null, 1:gpio, 2:pmu*/
+				cy,vbus-type = <2>;	/* 0:null, 1:gpio, 2:pmu*/
+				cy,vbus-value = <1800000>;
+				cy,vdd-value = <3100000>;
+				cy,pinctrl-set = <1>;
+				cy,vdd = "vdd";
+				cy,vbus = "vcc_i2c";
+				cy,hid_desc_register = <1>;
+				cy,flags = <0x0>; 
+				cy,mmi_test_support = <1>;
+				cy,new_fpc_flag = <0>; /* kobe set */
+				cy,input_register_early = <1>;
+				cy,fw_uptate_logic = <1>;
+				cy,ttda_cap_test_enable = <1>; /* kobe TTDA */
+				cy,mt {
+					cy,name = "cyttsp5_mt";
+					cy,inp_dev_name = "cyttsp5_mt";
+					cy,flags = <0x08>;/* CY_MT_FLAG_FLIP | CY_MT_FLAG_INV_X | CY_MT_FLAG_INV_Y */
+                                        cy,abs =
+                                                /* ABS_MT_POSITION_X, CY_ABS_MIN_X, CY_ABS_MAX_X, 0, 0 */
+                                                <0x35 0 800 0 0
+                                                /* ABS_MT_POSITION_Y, CY_ABS_MIN_Y, CY_ABS_MAX_Y, 0, 0 */
+                                                0x36 0 1280 0 0
+                                                /* ABS_MT_PRESSURE, CY_ABS_MIN_P, CY_ABS_MAX_P, 0, 0 */
+                                                0x3a 0 255 0 0
+                                                /* CY_IGNORE_VALUE, CY_ABS_MIN_W, CY_ABS_MAX_W, 0, 0 */
+                                                0xffff 0 255 0 0
+                                                /* ABS_MT_TRACKING_ID, CY_ABS_MIN_T, CY_ABS_MAX_T, 0, 0 */
+                                                0x39 0 15 0 0
+                                                /* ABS_MT_TOUCH_MAJOR, 0, 255, 0, 0 */
+                                                0x30 0 255 0 0
+                                                /* ABS_MT_TOUCH_MINOR, 0, 255, 0, 0 */
+                                                0x31 0 255 0 0
+                                                /* ABS_MT_ORIENTATION, -127, 127, 0, 0 */
+                                                0x34 0xffffff81 127 0 0
+                                                //delete lines
+                                                /* ABS_DISTANCE, 0, 255, 0, 0 */
+                                                0x19 0 255 0 0>;
+					cy,x_max = <800>;
+					cy,y_max = <1280>;
+					cy,p_max = <255>;
+					cy,slots_max = <32>;
+				};
+			};
+		};
+	};
+};
