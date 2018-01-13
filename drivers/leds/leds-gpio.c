@@ -21,6 +21,9 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
+#include "leds.h"
+int led_debug_mask = 3;
+module_param_named(led_debug, led_debug_mask, int, S_IRUGO | S_IWUSR | S_IWGRP);
 
 struct gpio_led_data {
 	struct led_classdev cdev;
@@ -54,7 +57,7 @@ static void gpio_led_set(struct led_classdev *led_cdev,
 	struct gpio_led_data *led_dat =
 		container_of(led_cdev, struct gpio_led_data, cdev);
 	int level;
-
+	int gpio_value = -1;
 	if (value == LED_OFF)
 		level = 0;
 	else
@@ -75,8 +78,14 @@ static void gpio_led_set(struct led_classdev *led_cdev,
 			led_dat->platform_gpio_blink_set(led_dat->gpio, level,
 							 NULL, NULL);
 			led_dat->blinking = 0;
-		} else
+			led_INFO("%s:leds tricolor set %s (%d)\n",__func__,led_dat->cdev.name, level);
+		}
+		else
+		{
 			gpio_set_value(led_dat->gpio, level);
+			gpio_value = gpio_get_value(led_dat->gpio);
+			led_INFO("[leds]%s:leds tricolor set %s (%d),gpio_value = %d\n",__func__,led_dat->cdev.name, level,gpio_value);
+		}
 	}
 }
 
@@ -87,6 +96,7 @@ static int gpio_blink_set(struct led_classdev *led_cdev,
 		container_of(led_cdev, struct gpio_led_data, cdev);
 
 	led_dat->blinking = 1;
+	led_INFO("[leds]%s:%s leds set blink on=%lu,off=%lu.\n",__func__,led_cdev->name, *delay_on, *delay_off);
 	return led_dat->platform_gpio_blink_set(led_dat->gpio, GPIO_LED_BLINK,
 						delay_on, delay_off);
 }
@@ -98,18 +108,19 @@ static int create_gpio_led(const struct gpio_led *template,
 	int ret, state;
 
 	led_dat->gpio = -1;
-
 	/* skip leds that aren't available */
-	if (!gpio_is_valid(template->gpio)) {
-		dev_info(parent, "Skipping unavailable LED gpio %d (%s)\n",
-				template->gpio, template->name);
+	if (!gpio_is_valid(template->gpio)) 
+	{
+		led_ERR("[leds]Skipping unavailable LED gpio %d (%s)\n",template->gpio, template->name);
 		return 0;
 	}
 
 	ret = devm_gpio_request(parent, template->gpio, template->name);
 	if (ret < 0)
+	{
+		led_ERR("[leds]%s:request for gpio space fail.\n",__func__);
 		return ret;
-
+	}
 	led_dat->cdev.name = template->name;
 	led_dat->cdev.default_trigger = template->default_trigger;
 	led_dat->gpio = template->gpio;
@@ -128,17 +139,21 @@ static int create_gpio_led(const struct gpio_led *template,
 	led_dat->cdev.brightness = state ? LED_FULL : LED_OFF;
 	if (!template->retain_state_suspended)
 		led_dat->cdev.flags |= LED_CORE_SUSPENDRESUME;
+	led_INFO("[leds]%s: enter %d.gpio = %d state = %d\n",__func__, __LINE__, led_dat->gpio, (led_dat->active_low ^ state));
 
 	ret = gpio_direction_output(led_dat->gpio, led_dat->active_low ^ state);
 	if (ret < 0)
+	{
+		led_ERR("[leds]%s:gpio_direction_output fail.\n",__func__);
 		return ret;
-
+	}
 	INIT_WORK(&led_dat->work, gpio_led_work);
-
 	ret = led_classdev_register(parent, &led_dat->cdev);
 	if (ret < 0)
+	{
+		led_ERR("[leds]%s:led_classdev_register fail.\n",__func__);
 		return ret;
-
+	}
 	return 0;
 }
 
@@ -168,21 +183,31 @@ static struct gpio_leds_priv *gpio_leds_create_of(struct platform_device *pdev)
 	struct device_node *np = pdev->dev.of_node, *child;
 	struct gpio_leds_priv *priv;
 	int count, ret;
-
+	led_INFO("[leds]%s: enter %d.\n",__func__, __LINE__);
 	/* count LEDs in this device, so we know how much to allocate */
 	count = of_get_available_child_count(np);
 	if (!count)
+	{
+		led_ERR("[leds]%s:there is no led device node in gpio-leds.\n",__func__);
 		return ERR_PTR(-ENODEV);
+
+	}
 
 	for_each_available_child_of_node(np, child)
 		if (of_get_gpio(child, 0) == -EPROBE_DEFER)
+		{
+			led_ERR("[leds]%s:allocate gpio num is error.\n",__func__);
 			return ERR_PTR(-EPROBE_DEFER);
 
+		}
 	priv = devm_kzalloc(&pdev->dev, sizeof_gpio_leds_priv(count),
 			GFP_KERNEL);
 	if (!priv)
+	{
+		led_ERR("[leds]%s:devm_kzalloc creat space fail.\n",__func__);
 		return ERR_PTR(-ENOMEM);
 
+	}
 	for_each_available_child_of_node(np, child) {
 		struct gpio_led led = {};
 		enum of_gpio_flags flags;
@@ -210,6 +235,7 @@ static struct gpio_leds_priv *gpio_leds_create_of(struct platform_device *pdev)
 				      &pdev->dev, NULL);
 		if (ret < 0) {
 			of_node_put(child);
+			led_ERR("[leds]%s:led create_gpio_led fail.\n",__func__);
 			goto err;
 		}
 	}
@@ -246,14 +272,18 @@ static int gpio_led_probe(struct platform_device *pdev)
 				sizeof_gpio_leds_priv(pdata->num_leds),
 					GFP_KERNEL);
 		if (!priv)
+		{
+			led_ERR("[leds]allocate space for led dev fail.\n");
 			return -ENOMEM;
-
+		}
+		led_INFO("[leds]%s:create_gpio_led.\n",__func__);
 		priv->num_leds = pdata->num_leds;
 		for (i = 0; i < priv->num_leds; i++) {
 			ret = create_gpio_led(&pdata->leds[i],
 					      &priv->leds[i],
 					      &pdev->dev, pdata->gpio_blink_set);
 			if (ret < 0) {
+				led_ERR("[leds]%s:led_array create_gpio_led fail.\n",__func__);
 				/* On failure: unwind the led creations */
 				for (i = i - 1; i >= 0; i--)
 					delete_gpio_led(&priv->leds[i]);
@@ -263,10 +293,15 @@ static int gpio_led_probe(struct platform_device *pdev)
 	} else {
 		priv = gpio_leds_create_of(pdev);
 		if (IS_ERR(priv))
+		{
+			led_ERR("[leds]%s:led_array gpio_leds_create_of fail.\n",__func__);
 			return PTR_ERR(priv);
+		}
+		led_INFO("[leds]%s:gpio_leds_create_of.\n",__func__);
 	}
 
 	platform_set_drvdata(pdev, priv);
+	led_INFO("[leds]%s:led-gpio probe success.\n",__func__);
 
 	return 0;
 }
