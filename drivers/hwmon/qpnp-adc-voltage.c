@@ -32,6 +32,7 @@
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/thermal.h>
+#include <linux/regulator/consumer.h>
 
 /* QPNP VADC register definition */
 #define QPNP_VADC_REVISION1				0x0
@@ -152,6 +153,10 @@
 #define QPNP_VADC_HC1_VBAT_MIN_DATA0				0x52
 #define QPNP_VADC_MC1_VBAT_MIN_DATA1				0x53
 
+#define QPNP_VADC_LDO16_MIN_MICROVOLT				1800000
+#define QPNP_VADC_LDO16_MAX_MICROVOLT				1800000
+#define QPNP_VADC_LDO16_CONSUMER_SUPPLY				"custom_l16"
+
 /*
  * Conversion time varies between 213uS to 6827uS based on the decimation,
  * clock rate, fast average samples with no measurement in queue.
@@ -159,6 +164,18 @@
 #define QPNP_VADC_HC1_CONV_TIME_MIN_US				213
 #define QPNP_VADC_HC1_CONV_TIME_MAX_US				214
 #define QPNP_VADC_HC1_ERR_COUNT					1600
+
+#define BUF_MAX_LENGTH        8
+
+static struct qpnp_vadc_chip *qpnp_vadc;
+static struct qpnp_vadc_chip *qpnp_pmi_vadc;
+static int pa_mpp_number = -1;
+static int cpu_mpp_number = -1;
+static int chg_mpp_number = -1;
+static int therm_chg;
+static int therm_cpu;
+static int therm_pa;
+static int therm_sub_board;
 
 struct qpnp_vadc_mode_state {
 	bool				meas_int_mode;
@@ -220,7 +237,179 @@ static struct qpnp_vadc_scale_fn vadc_scale_fn[] = {
 	[SCALE_NCP_03WF683_THERM] = {qpnp_adc_scale_therm_ncp03},
 	[SCALE_QRD_SKUT1_BATT_THERM] = {qpnp_adc_scale_qrd_skut1_batt_therm},
 	[SCALE_PMI_CHG_TEMP] = {qpnp_adc_scale_pmi_chg_temp},
+	[SCALE_PA_THERM] = {qpnp_adc_scale_huawei_pa_therm},
 };
+
+static int get_pa_temp(char *buf, struct kernel_param *kp)
+{
+	int rc = 0;
+	struct qpnp_vadc_result results;
+
+	if (pa_mpp_number < 0 || NULL == qpnp_vadc) {
+		return  0;
+	}
+
+	rc = qpnp_vadc_read(qpnp_vadc, pa_mpp_number, &results);
+	if (rc) {
+		pr_debug("Unable to read pa temperature rc=%d\n", rc);
+		return 0;
+	}
+	pr_debug("get_pa_temp %d %lld\n", results.adc_code, results.physical);
+
+	return snprintf(buf, BUF_MAX_LENGTH, "%d", (int)results.physical);
+}
+module_param_call(therm_pa, NULL, get_pa_temp, &therm_pa, 0644);
+
+static int get_cpu_temp(char *buf, struct kernel_param *kp)
+{
+	int rc = 0;
+	struct qpnp_vadc_result results;
+
+	if (cpu_mpp_number < 0 || NULL == qpnp_vadc) {
+		return 0;
+	}
+
+	rc = qpnp_vadc_read(qpnp_vadc, cpu_mpp_number, &results);
+	if (rc) {
+		pr_debug("Unable to read cpu temperature rc=%d\n", rc);
+		return 0;
+	}
+	pr_debug("get_cpu_temp %d %lld\n", results.adc_code, results.physical);
+
+	return snprintf(buf, BUF_MAX_LENGTH, "%d", (int)results.physical);
+}
+module_param_call(therm_cpu, NULL, get_cpu_temp, &therm_cpu, 0644);
+
+static int get_chg_temp(char *buf, struct kernel_param *kp)
+{
+	int rc = 0;
+	struct qpnp_vadc_result results;
+
+	if (chg_mpp_number < 0 || qpnp_vadc == NULL) {
+		return 0;
+	}
+
+	rc = qpnp_vadc_read(qpnp_vadc, chg_mpp_number, &results);
+	if (rc) {
+		pr_debug("Unable to read chg temperature rc=%d\n", rc);
+		return 0;
+	}
+	pr_debug("get_chg_temp %d %lld\n", results.adc_code, results.physical);
+
+	return snprintf(buf, BUF_MAX_LENGTH, "%d", (int)results.physical);
+}
+module_param_call(therm_chg, NULL, get_chg_temp, &therm_chg, 0644);
+
+#ifdef CONFIG_HUAWEI_PMU_DSM
+/* get pa temperature*/
+int dsm_get_pa_temp(void)
+{
+	int rc = 0;
+	struct qpnp_vadc_result results;
+
+	if(pa_mpp_number < 0 || qpnp_vadc == NULL)
+	{
+		return  0;
+	}
+	rc = qpnp_vadc_read(qpnp_vadc,pa_mpp_number, &results);
+	if (rc) {
+		pr_debug("Unable to read pa temperature rc=%d\n", rc);
+		return 0;
+	}
+	pr_debug("get_pa_temp %d %lld\n",
+		results.adc_code, results.physical);
+
+	return (int)results.physical;
+}
+EXPORT_SYMBOL(dsm_get_pa_temp);
+
+/* get cpu temperature*/
+int dsm_get_cpu_temp(void)
+{
+	int rc = 0;
+	struct qpnp_vadc_result results;
+	if(cpu_mpp_number < 0 || qpnp_vadc == NULL)
+	{
+		return 0;
+	}
+
+	rc = qpnp_vadc_read(qpnp_vadc,cpu_mpp_number, &results);
+	if (rc) {
+		pr_debug("Unable to read cpu temperature rc=%d\n", rc);
+		return 0;
+	}
+	pr_debug("get_cpu_temp %d %lld\n",
+		results.adc_code, results.physical);
+
+	return (int)results.physical;
+}
+EXPORT_SYMBOL(dsm_get_cpu_temp);
+#endif
+
+
+int get_pmi_sub_voltage(void)
+{
+	int rc = 0;
+	struct qpnp_vadc_result results;
+	struct regulator *ldo16;
+	int err = 0;
+	int err_result = -1;
+
+	memset(&results, 0, sizeof(struct qpnp_vadc_result));
+
+	ldo16 = regulator_get(NULL, QPNP_VADC_LDO16_CONSUMER_SUPPLY);
+	if (IS_ERR(ldo16)) {
+		err = PTR_ERR(ldo16);
+		pr_err("Error %d getting ldo16 regulator\n", err);
+		goto fail_get_ldo;
+	}
+
+	err = regulator_set_voltage(ldo16, QPNP_VADC_LDO16_MIN_MICROVOLT, QPNP_VADC_LDO16_MAX_MICROVOLT);
+	if (err) {
+		pr_err("ldo16 regulator set voltage failed, err=%d\n", err);
+		goto fail_put_ldo;
+	}
+
+	err = regulator_enable(ldo16);
+	if (err) {
+		pr_err("ldo16 enable failed, err=%d\n", err);
+		goto fail_put_ldo;
+	}
+
+	if (NULL == qpnp_pmi_vadc) {
+		pr_err("Error qpnp_pmi_vadc is NULL\n");
+		goto fail_put_ldo;
+	}
+
+	rc = qpnp_vadc_read(qpnp_pmi_vadc,P_MUX1_1_1, &results);
+	if (rc) {
+		pr_err("Unable to read sub board temp rc=%d\n", rc);
+	} else {
+		pr_info("get_pmi_sub_voltage %d %lld\n", results.adc_code, results.physical);
+	}
+
+	err = regulator_disable(ldo16);
+	if (err) {
+		pr_err("ldo16 disable failed, err=%d\n", err);
+		goto fail_put_ldo;
+	}
+	regulator_put(ldo16);
+	return results.physical/1000;
+
+fail_put_ldo:
+	regulator_put(ldo16);
+fail_get_ldo:
+	return err_result;
+}
+EXPORT_SYMBOL(get_pmi_sub_voltage);
+static int get_sub_board_voltage(char *buf, struct kernel_param *kp)
+{
+	int voltage = 0;
+	voltage = get_pmi_sub_voltage();
+	return snprintf(buf, BUF_MAX_LENGTH, "%d", voltage);
+}
+
+module_param_call(therm_sub_board, NULL, get_sub_board_voltage, &therm_sub_board, 0644);
 
 static struct qpnp_vadc_rscale_fn adc_vadc_rscale_fn[] = {
 	[SCALE_RVADC_ABSOLUTE] = {qpnp_vadc_absolute_rthr},
@@ -2624,6 +2813,31 @@ static int qpnp_vadc_probe(struct spmi_device *spmi)
 		return rc;
 	}
 	mutex_init(&vadc->adc->adc_lock);
+
+	rc = of_property_read_u32(spmi->dev.of_node,
+			"pa_mpp_number", &pa_mpp_number);
+	if (rc) {
+		dev_err(&spmi->dev,
+			"failed to read pa_mpp_number device tree\n");
+	}
+	rc = of_property_read_u32(spmi->dev.of_node,
+			"cpu_mpp_number", &cpu_mpp_number);
+	if (rc) {
+		dev_err(&spmi->dev,
+			"failed to read cpu_mpp_number device tree\n");
+	}
+	rc = of_property_read_u32(spmi->dev.of_node,
+			"chg_mpp_number", &chg_mpp_number);
+	if (rc) {
+		dev_err(&spmi->dev,
+			"failed to read chg_mpp_number device tree\n");
+	}
+	if (0 == vadc->adc->slave) {
+		qpnp_vadc = vadc;
+	}
+	else if (2 == vadc->adc->slave) {
+		qpnp_pmi_vadc = vadc;
+	}
 
 	rc = qpnp_vadc_init_hwmon(vadc, spmi);
 	if (rc) {
