@@ -34,6 +34,7 @@ config REGMAP_ALLOW_WRITE_DEBUGFS
 	bool "Allow register writes through debugfs"
 	depends on DEBUG_FS
 	depends on REGMAP
+	default y
 	help
 	 Add support to allow register writes through
 	 debugfs. Client driver can enable this config
