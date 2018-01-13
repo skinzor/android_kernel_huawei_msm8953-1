@@ -17,6 +17,26 @@
 #include <linux/rwsem.h>
 #include <linux/leds.h>
 
+#define led_ERR(x...) do {\
+    if (led_debug_mask >=0) \
+        printk(KERN_ERR x);\
+    } while (0)
+
+#define led_INFO(x...) do {\
+    if (led_debug_mask >=0) \
+        printk(KERN_ERR x);\
+    } while (0)
+
+#define led_FLOW(x...) do {\
+    if (led_debug_mask >=1) \
+        printk(KERN_ERR x);\
+    } while (0)
+
+#define led_DBG(x...) do {\
+    if (led_debug_mask) \
+        printk(KERN_ERR x);\
+} while (0)
+
 static inline void __led_set_brightness(struct led_classdev *led_cdev,
 					enum led_brightness value)
 {

@@ -736,6 +736,8 @@ failgreen:
 failred:
 	sysfs_remove_group(&client->dev.kobj, &blinkm_group);
 exit:
+	kfree(data);
+	data = NULL;
 	return err;
 }
 
