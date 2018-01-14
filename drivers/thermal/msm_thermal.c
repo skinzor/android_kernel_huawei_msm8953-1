@@ -51,6 +51,10 @@
 #include <linux/uio_driver.h>
 #include <linux/msm-bus.h>
 
+#ifdef CONFIG_HUAWEI_RESET_DETECT
+#include <linux/huawei_reset_detect.h>
+#endif
+
 #define CREATE_TRACE_POINTS
 #define TRACE_MSM_THERMAL
 #include <trace/trace_thermal.h>
@@ -1436,8 +1440,6 @@ static int get_cpu_freq_plan_len(int cpu)
 	rcu_read_lock();
 	table_len = dev_pm_opp_get_opp_count(cpu_dev);
 	if (table_len <= 0) {
-		pr_err("Error reading CPU%d freq table len. error:%d\n",
-			cpu, table_len);
 		table_len = 0;
 		goto unlock_and_exit;
 	}
@@ -2719,6 +2721,10 @@ static void msm_thermal_bite(int zone_id, long temp)
 	} else {
 		pr_err("Tsens:%d reached temperature:%ld. System reset\n",
 			tsens_id, temp);
+
+#ifdef CONFIG_HUAWEI_RESET_DETECT
+		set_reset_magic(RESET_MAGIC_THERMAL);
+#endif
 	}
 	if (!is_scm_armv8()) {
 		scm_call_atomic1(SCM_SVC_BOOT, THERM_SECURE_BITE_CMD, 0);
@@ -4084,6 +4090,28 @@ int msm_thermal_set_frequency(uint32_t cpu, uint32_t freq, bool is_max)
 set_freq_exit:
 	return ret;
 }
+
+#ifdef CONFIG_HUAWEI_PMU_DSM
+/* get thermal_zone2(tsens2) and thermal_zone4(tsen5) temerature*/
+int dsm_get_tsens_temp(uint32_t tsensor_id, long *temp)
+{
+	int ret = 0;
+	long *tsen_temp;
+	uint32_t tsen_id;
+
+	tsen_temp = temp;
+	tsen_id = tsensor_id;
+	ret = therm_get_temp(tsen_id, THERM_TSENS_ID, tsen_temp);
+	if (ret) {
+		pr_err("Unable to read temperature for tsen_id:%d. err:%d\n",
+			tsen_id, ret);
+		ret = -EINVAL;
+		return ret;
+	}
+	return ret;
+}
+EXPORT_SYMBOL(dsm_get_tsens_temp);
+#endif
 
 int therm_set_threshold(struct threshold_info *thresh_inp)
 {
@@ -6635,6 +6663,11 @@ static int probe_cc(struct device_node *node, struct msm_thermal_data *data,
 	if (ret)
 		goto hotplug_node_fail;
 
+#ifdef CONFIG_HLTHERM_RUNTEST
+	data->core_limit_temp_degC = 130;
+	data->hotplug_temp_degC = 130;
+#endif
+
 read_node_fail:
 	if (ret) {
 		dev_info(&pdev->dev,
@@ -6850,6 +6883,10 @@ static int probe_therm_reset(struct device_node *node,
 	if (ret)
 		goto PROBE_RESET_EXIT;
 
+#ifdef CONFIG_HLTHERM_RUNTEST
+	data->therm_reset_temp_degC = 140;
+#endif
+
 	ret = sensor_mgr_init_threshold(&thresh[MSM_THERM_RESET],
 		MONITOR_ALL_TSENS,
 		data->therm_reset_temp_degC, data->therm_reset_temp_degC - 10,
@@ -6903,6 +6940,10 @@ static int probe_freq_mitigation(struct device_node *node,
 		MAX_DEBUGFS_CONFIG_LEN, "cpufreq");
 	mit_config[MSM_LIST_MAX_NR + CPUFREQ_CONFIG].disable_config
 		= thermal_cpu_freq_mit_disable;
+
+#ifdef CONFIG_HLTHERM_RUNTEST
+	data->freq_mitig_temp_degc = 130;
+#endif
 
 PROBE_FREQ_EXIT:
 	if (ret) {
@@ -7286,6 +7327,10 @@ static int msm_thermal_dev_probe(struct platform_device *pdev)
 		online_core = true;
 	else
 		online_core = false;
+
+#ifdef CONFIG_HLTHERM_RUNTEST
+	data.limit_temp_degC = 130;
+#endif
 
 	probe_sensor_info(node, &data, pdev);
 	ret = probe_cc(node, &data, pdev);

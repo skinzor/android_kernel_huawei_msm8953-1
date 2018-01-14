@@ -1532,6 +1532,9 @@ static int tsens_tz_get_temp(struct thermal_zone_device *thermal,
 	if (rc)
 		return rc;
 
+#ifdef CONFIG_HLTHERM_RUNTEST
+	*temp = 300;
+#endif
 	return 0;
 }
 
