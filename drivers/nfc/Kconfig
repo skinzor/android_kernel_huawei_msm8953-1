@@ -68,6 +68,13 @@ config NFC_PORT100
 
 	  If unsure, say N.
 
+config NFC_PN547
+	tristate "PN547 NFC driver"
+	depends on I2C
+	help
+	  NXP PN547 driver.
+
+
 source "drivers/nfc/pn544/Kconfig"
 source "drivers/nfc/microread/Kconfig"
 source "drivers/nfc/nfcmrvl/Kconfig"
