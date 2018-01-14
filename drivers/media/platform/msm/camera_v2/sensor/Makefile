@@ -6,3 +6,7 @@ ccflags-y += -Idrivers/media/platform/msm/camera_v2/sensor/io
 ccflags-y += -Idrivers/media/platform/msm/camera_v2/sensor/cci
 obj-$(CONFIG_MSMB_CAMERA) += cci/ io/ csiphy/ csid/ actuator/ eeprom/ ois/ flash/ ir_led/ ir_cut/
 obj-$(CONFIG_MSM_CAMERA_SENSOR) += msm_sensor_init.o msm_sensor_driver.o msm_sensor.o
+obj-$(CONFIG_MSM_CAMERA_SENSOR) += sensor_otp_common_if.o
+obj-$(CONFIG_MSM_CAMERA_SENSOR) += sensor_otp_hi843s.o
+obj-$(CONFIG_MSM_CAMERA_SENSOR) += sensor_otp_imx219.o
+obj-$(CONFIG_MSM_CAMERA_SENSOR) += sensor_otp_hi553.o

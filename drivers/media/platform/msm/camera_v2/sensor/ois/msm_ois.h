@@ -67,6 +67,10 @@ struct msm_ois_ctrl_t {
 	struct msm_camera_gpio_conf *gconf;
 	struct msm_pinctrl_info pinctrl_info;
 	uint8_t cam_pinctrl_status;
+	struct msm_camera_gpio_num_info gpio_num_info;
+	wait_queue_head_t wait_check_ois;
+	int32_t check_ois;
+	int32_t ois_wait_end;
 	struct msm_ois_board_info *oboard_info;
 };
 

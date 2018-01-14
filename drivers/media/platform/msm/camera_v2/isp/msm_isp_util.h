@@ -18,9 +18,29 @@
 
 /* #define CONFIG_MSM_ISP_DBG 1 */
 
+#ifdef CONFIG_HUAWEI_KERNEL
+extern bool huawei_cam_is_factory_mode(void);
+#endif
+
 #ifdef CONFIG_MSM_ISP_DBG
+#undef ISP_DBG
 #define ISP_DBG(fmt, args...) printk(fmt, ##args)
+#define ISP_HW_DBG(fmt, args...) printk(fmt, ##args)
 #else
+#ifdef CONFIG_HUAWEI_KERNEL
+#define ISP_HW_DBG(fmt, args...)       \
+do{                                 \
+    if(huawei_cam_is_factory_mode())\
+    {                               \
+        printk(fmt, ##args);        \
+    }                               \
+    else                            \
+    {                               \
+        pr_debug(fmt, ##args);      \
+    }                               \
+}while(0)
+#endif
+#undef ISP_DBG
 #define ISP_DBG(fmt, args...) pr_debug(fmt, ##args)
 #endif
 

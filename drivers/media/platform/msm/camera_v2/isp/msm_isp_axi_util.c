@@ -18,6 +18,15 @@
 
 
 #define ISP_SOF_DEBUG_COUNT 0
+
+#ifdef CONFIG_HUAWEI_DSM
+#include "msm_camera_dsm.h"
+#endif
+
+#ifdef CONFIG_HUAWEI_DSM
+extern void camera_report_dsm_err_msm_isp(struct vfe_device *vfe_dev, int type, int err_num , const char* str);
+#endif
+
 static int msm_isp_update_dual_HW_ms_info_at_start(
 	struct vfe_device *vfe_dev,
 	enum msm_vfe_input_src stream_src,
@@ -2896,6 +2905,7 @@ static int msm_isp_start_axi_stream(struct vfe_device *vfe_dev,
 	struct msm_vfe_axi_shared_data *axi_data = &vfe_dev->axi_data;
 	uint32_t src_mask = 0;
 	unsigned long flags;
+	vfe_dev->ignore_irq = 0;
 
 	if (stream_cfg_cmd->num_streams > MAX_NUM_STREAM)
 		return -EINVAL;
@@ -3033,7 +3043,10 @@ static int msm_isp_start_axi_stream(struct vfe_device *vfe_dev,
 			}
 		}
 	}
-
+#ifdef CONFIG_HUAWEI_DSM
+	if (rc < 0)
+		camera_report_dsm_err_msm_isp(vfe_dev, DSM_CAMERA_ISP_AXI_STREAM_FAIL, rc, "start_axi_stream");
+#endif
 	return rc;
 }
 
@@ -3051,6 +3064,7 @@ static int msm_isp_stop_axi_stream(struct vfe_device *vfe_dev,
 	uint32_t src_mask = 0, intf, bufq_id = 0, bufq_handle = 0;
 	unsigned long flags;
 	struct msm_isp_timestamp timestamp;
+	struct dual_vfe_resource *dual_vfe_res = NULL;
 
 	if (stream_cfg_cmd->num_streams > MAX_NUM_STREAM ||
 		stream_cfg_cmd->num_streams == 0)
@@ -3149,6 +3163,10 @@ static int msm_isp_stop_axi_stream(struct vfe_device *vfe_dev,
 					pr_err("%s: vfe%d cfg done failed\n",
 						__func__, vfe_dev->pdev->id);
 					stream_info->state = INACTIVE;
+#ifdef CONFIG_HUAWEI_DSM
+					camera_report_dsm_err_msm_isp(vfe_dev, DSM_CAMERA_ISP_AXI_STREAM_FAIL, rc, "stop_axi_stream");
+#endif
+
 				} else
 					pr_err("%s: vfe%d retry success! report err!\n",
 						__func__, vfe_dev->pdev->id);
@@ -3191,9 +3209,15 @@ static int msm_isp_stop_axi_stream(struct vfe_device *vfe_dev,
 	}
 	if (halt) {
 		/*during stop immediately, stop output then stop input*/
+		if (vfe_dev->is_split && vfe_dev->pdev->id == ISP_VFE0) {
+			dual_vfe_res = vfe_dev->common_data->dual_vfe_res;
+			vfe_dev->ignore_irq = 1;
+			dual_vfe_res->vfe_dev[!vfe_dev->pdev->id]->ignore_irq = 1;
+		}
 		vfe_dev->hw_info->vfe_ops.axi_ops.halt(vfe_dev, 1);
 		vfe_dev->hw_info->vfe_ops.core_ops.reset_hw(vfe_dev, 0, 1);
 		vfe_dev->hw_info->vfe_ops.core_ops.init_hw_reg(vfe_dev);
+		vfe_dev->ignore_irq = 0;
 	}
 
 	msm_isp_update_camif_output_count(vfe_dev, stream_cfg_cmd);
@@ -3965,6 +3989,8 @@ void msm_isp_process_axi_irq_stream(struct vfe_device *vfe_dev,
 
 	if (rc < 0) {
 		spin_unlock_irqrestore(&stream_info->lock, flags);
+		pr_err("%s: FATAL error on vfe%d\n", __func__,
+			vfe_dev->pdev->id);
 		/* this usually means a serious scheduling error */
 		msm_isp_halt_send_error(vfe_dev, ISP_EVENT_PING_PONG_MISMATCH);
 		return;
@@ -4069,7 +4095,7 @@ void msm_isp_process_axi_irq(struct vfe_device *vfe_dev,
 		get_comp_mask(irq_status0, irq_status1);
 	wm_mask = vfe_dev->hw_info->vfe_ops.axi_ops.
 		get_wm_mask(irq_status0, irq_status1);
-	if (!(comp_mask || wm_mask))
+	if (!(comp_mask || wm_mask) || vfe_dev->ignore_irq)
 		return;
 
 	ISP_DBG("%s: status: 0x%x\n", __func__, irq_status0);

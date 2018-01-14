@@ -32,6 +32,10 @@
 #include "msm.h"
 #include "msm_vb2.h"
 
+#ifdef CONFIG_HUAWEI_DSM
+#include "msm_camera_dsm.h"
+#endif
+
 #define fh_to_private(__fh) \
 	container_of(__fh, struct camera_v4l2_private, fh)
 
@@ -558,7 +562,7 @@ static int camera_v4l2_fh_open(struct file *filep)
 	stream_id = atomic_read(&pvdev->opened);
 	sp->stream_id = find_first_zero_bit(
 		(const unsigned long *)&stream_id, MSM_CAMERA_STREAM_CNT_BITS);
-	pr_debug("%s: Found stream_id=%d\n", __func__, sp->stream_id);
+	pr_info("%s: Found stream_id=%d\n", __func__, sp->stream_id);
 
 	mutex_init(&sp->lock);
 
@@ -670,6 +674,7 @@ static int camera_v4l2_open(struct file *filep)
 		}
 
 		if (msm_is_daemon_present() != false) {
+                        pr_info("%s : NEW_SESSION event\n",__func__);
 			camera_pack_event(filep, MSM_CAMERA_NEW_SESSION,
 				0, -1, &event);
 			rc = msm_post_event(&event, MSM_POST_EVT_TIMEOUT);
@@ -751,8 +756,13 @@ static int camera_v4l2_close(struct file *filep)
 	opn_idx &= ~mask;
 	atomic_set(&pvdev->opened, opn_idx);
 
+#ifdef CONFIG_HUAWEI_DSM
+	camera_is_closing = 1;
+#endif
+
 	if (msm_is_daemon_present() != false && sp->stream_created == true) {
-		pr_debug("%s: close stream_id=%d\n", __func__, sp->stream_id);
+		pr_info("%s: close stream_id=%d,opn_idx=%d\n",
+		             __func__, sp->stream_id, opn_idx);
 		camera_pack_event(filep, MSM_CAMERA_SET_PARM,
 			MSM_CAMERA_PRIV_DEL_STREAM, -1, &event);
 		msm_post_event(&event, MSM_POST_EVT_TIMEOUT);
@@ -763,6 +773,7 @@ static int camera_v4l2_close(struct file *filep)
 
 	if (atomic_read(&pvdev->opened) == 0) {
 		if (msm_is_daemon_present() != false) {
+			pr_info("%s: DEL_SESSION event\n", __func__);
 			camera_pack_event(filep, MSM_CAMERA_DEL_SESSION,
 				0, -1, &event);
 			msm_post_event(&event, MSM_POST_EVT_TIMEOUT);

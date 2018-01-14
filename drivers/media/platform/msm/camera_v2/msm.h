@@ -137,6 +137,8 @@ struct vb2_queue *msm_get_stream_vb2q(unsigned int session_id,
 struct msm_stream *msm_get_stream_from_vb2q(struct vb2_queue *q);
 struct msm_session *msm_get_session_from_vb2q(struct vb2_queue *q);
 struct msm_session *msm_session_find(unsigned int session_id);
+
+void msm_sd_get_subdevs(struct v4l2_subdev *subdev_s[], int max_num, const char *name);
 #ifdef CONFIG_COMPAT
 long msm_copy_camera_private_ioctl_args(unsigned long arg,
 	struct msm_camera_private_ioctl_arg *k_ioctl,

@@ -99,6 +99,9 @@ struct csid_device {
 	uint32_t hw_dts_version;
 	enum msm_csid_state_t csid_state;
 	struct csid_ctrl_t *ctrl_reg;
+	/* optimize camera print mipi packet and frame count log*/
+	//struct delayed_work packet_num_work;
+	uint32_t (*csid_read_mipi_pkg)(struct csid_device *);
 	struct regulator *reg_ptr;
 	size_t num_clk;
 	struct clk **csid_clk;

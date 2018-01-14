@@ -34,7 +34,9 @@
 #include "msm_vidc_debug.h"
 #include "venus_hfi.h"
 #include "vidc_hfi_io.h"
-
+#ifdef CONFIG_HUAWEI_DSM
+#include "msm_camera_vid_dsm.h"
+#endif
 #define FIRMWARE_SIZE			0X00A00000
 #define REG_ADDR_OFFSET_BITMASK	0x000FFFFF
 #define QDSS_IOVA_START 0x80001000
@@ -4390,6 +4392,9 @@ fail_protect_mem:
 		subsystem_put(device->resources.fw.cookie);
 	device->resources.fw.cookie = NULL;
 fail_load_fw:
+#ifdef CONFIG_HUAWEI_DSM
+	camera_vid_report_dsm_err_vidc(DSM_CAMERA_VIDC_LOAD_FW_FAIL, rc, NULL);
+#endif
 	__venus_power_off(device, true);
 fail_venus_power_on:
 fail_init_pkt:
