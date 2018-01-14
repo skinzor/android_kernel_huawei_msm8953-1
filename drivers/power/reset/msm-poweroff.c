@@ -32,7 +32,20 @@
 #include <soc/qcom/scm.h>
 #include <soc/qcom/restart.h>
 #include <soc/qcom/watchdog.h>
+#ifdef CONFIG_HUAWEI_RESET_DETECT
+#include <linux/huawei_reset_detect.h>
+#endif
 
+#include <linux/fcntl.h>
+#include <linux/syscalls.h>
+#define MISC_DEVICE "/dev/block/bootdevice/by-name/misc"
+#define USB_UPDATE_POLL_TIME  2000
+struct bootloader_message {
+    char command[32];
+    char status[32];
+    char recovery[768];
+    char stage[32];
+};
 #define EMERGENCY_DLOAD_MAGIC1    0x322A4F99
 #define EMERGENCY_DLOAD_MAGIC2    0xC67E4350
 #define EMERGENCY_DLOAD_MAGIC3    0x77777777
@@ -45,8 +58,8 @@
 #define SCM_EDLOAD_MODE			0X01
 #define SCM_DLOAD_CMD			0x10
 
-
 static int restart_mode;
+static void *dload_type_addr;
 static void *restart_reason;
 static bool scm_pmic_arbiter_disable_supported;
 static bool scm_deassert_ps_hold_supported;
@@ -60,7 +73,7 @@ static void scm_disable_sdi(void);
 * There is no API from TZ to re-enable the registers.
 * So the SDI cannot be re-enabled when it already by-passed.
 */
-static int download_mode = 1;
+static int download_mode = 0;
 #else
 static const int download_mode;
 #endif
@@ -69,6 +82,10 @@ static const int download_mode;
 #define EDL_MODE_PROP "qcom,msm-imem-emergency_download_mode"
 #define DL_MODE_PROP "qcom,msm-imem-download_mode"
 
+#define SDUPDATE_FLAG_MAGIC_NUM  0x77665528
+#define USBUPDATE_FLAG_MAGIC_NUM  0x77665523
+#define SD_UPDATE_RESET_FLAG   "sdupdate"
+#define USB_UPDATE_RESET_FLAG   "usbupdate"
 static int in_panic;
 static void *dload_mode_addr;
 static bool dload_mode_enabled;
@@ -147,34 +164,68 @@ static void set_dload_mode(int on)
 	dload_mode_enabled = on;
 }
 
+void clear_dload_mode(void)
+{
+	set_dload_mode(0);
+}
+
 static bool get_dload_mode(void)
 {
 	return dload_mode_enabled;
 }
 
-static void enable_emergency_dload_mode(void)
+/*This function write usb_update sign to the misc partion,
+   if write successfull, then hard restart the device*/
+void huawei_restart(void)
 {
-	int ret;
+    struct bootloader_message boot;
+    int fd  = 0;
 
-	if (emergency_dload_mode_addr) {
-		__raw_writel(EMERGENCY_DLOAD_MAGIC1,
-				emergency_dload_mode_addr);
-		__raw_writel(EMERGENCY_DLOAD_MAGIC2,
-				emergency_dload_mode_addr +
-				sizeof(unsigned int));
-		__raw_writel(EMERGENCY_DLOAD_MAGIC3,
-				emergency_dload_mode_addr +
-				(2 * sizeof(unsigned int)));
+    memset((void*)&boot, 0x0, sizeof(struct bootloader_message));
+    strlcpy(boot.command, "boot-recovery", sizeof(boot.command));
+    strcpy(boot.recovery, "recovery\n");
+    strcat(boot.recovery, "--");
+    strcat(boot.recovery, "usb_update");
 
-		/* Need disable the pmic wdt, then the emergency dload mode
-		 * will not auto reset. */
-		qpnp_pon_wd_config(0);
-		mb();
-	}
-
-	ret = scm_set_dload_mode(SCM_EDLOAD_MODE, 0);
-	if (ret)
-		pr_err("Failed to set secure EDLOAD mode: %d\n", ret);
+    fd = sys_open(MISC_DEVICE,O_RDWR,0);
+    if( fd < 0 )
+    {
+        pr_err("open the devices %s fail",MISC_DEVICE);
+        return ;
+    }
+    if(sys_write((unsigned int )fd, (char*)&boot, sizeof(boot)) < 0)
+    {
+        pr_err("write to the devices %s fail",MISC_DEVICE);
+        return;
+    }
+    sys_sync();
+    kernel_restart(NULL);
+}
+/*This function poll the address restart_reason,if
+   there is the magic SDUPDATE_FLAG_MAGIC_NUM, restart
+   the devices.,the magic is written by modem when the
+   user click the usb update tool to update*/
+int usb_update_thread(void *__unused)
+{
+    unsigned int  dload_magic = 0;
+    for(;;)
+    {
+        if(NULL != restart_reason)
+        {
+             dload_magic = __raw_readl(restart_reason);
+        }
+        else
+        {
+             pr_info("restart_reason is null,wait for ready\n");
+        }
+        if(SDUPDATE_FLAG_MAGIC_NUM == dload_magic)
+        {
+            pr_info("update mode, restart to usb update\n");
+            huawei_restart();
+        }
+        msleep(USB_UPDATE_POLL_TIME);
+    }
+    return 0;
 }
 
 static int dload_set(const char *val, struct kernel_param *kp)
@@ -278,6 +329,14 @@ static void msm_restart_prepare(const char *cmd)
 	set_dload_mode(download_mode &&
 			(in_panic || restart_mode == RESTART_DLOAD));
 #endif
+#ifdef CONFIG_HUAWEI_RESET_DETECT
+	/* if the restart is triggered by panic, keep the magic number
+	* if the restart is a nomal reboot, clear the reset magic number*/
+	if(!in_panic)
+	{
+		clear_reset_magic();
+	}
+#endif
 
 	if (qpnp_pon_check_hard_reset_stored()) {
 		/* Set warm reset as true when device is in dload mode */
@@ -286,7 +345,7 @@ static void msm_restart_prepare(const char *cmd)
 			!strcmp(cmd, "edl")))
 			need_warm_reset = true;
 	} else {
-		need_warm_reset = (get_dload_mode() ||
+		need_warm_reset = (in_panic || get_dload_mode() ||
 				((cmd != NULL && cmd[0] != '\0') &&
 				strcmp(cmd, "userrequested")));
 	}
@@ -330,8 +389,10 @@ static void msm_restart_prepare(const char *cmd)
 			if (!ret)
 				__raw_writel(0x6f656d00 | (code & 0xff),
 					     restart_reason);
-		} else if (!strncmp(cmd, "edl", 3)) {
-			enable_emergency_dload_mode();
+#ifdef CONFIG_HUAWEI_RESET_DETECT
+		}else if (!strncmp(cmd, "emergency_restart", 17)) {
+		pr_info("do nothing\n");
+#endif
 		} else {
 			__raw_writel(0x77665501, restart_reason);
 		}
@@ -374,6 +435,8 @@ static void do_msm_restart(enum reboot_mode reboot_mode, const char *cmd)
 {
 	pr_notice("Going down for restart now\n");
 
+	console_verbose();
+	dump_stack();
 	msm_restart_prepare(cmd);
 
 #ifdef CONFIG_MSM_DLOAD_MODE
@@ -398,6 +461,9 @@ static void do_msm_poweroff(void)
 	pr_notice("Powering off the SoC\n");
 
 	set_dload_mode(0);
+#ifdef CONFIG_HUAWEI_RESET_DETECT
+	clear_reset_magic();
+#endif
 	scm_disable_sdi();
 	qpnp_pon_system_pwr_off(PON_POWER_OFF_SHUTDOWN);
 
@@ -518,7 +584,6 @@ static int msm_restart_probe(struct platform_device *pdev)
 		if (!emergency_dload_mode_addr)
 			pr_err("unable to map imem EDLOAD mode offset\n");
 	}
-
 	np = of_find_compatible_node(NULL, NULL,
 				"qcom,msm-imem-dload-type");
 	if (!np) {
@@ -606,6 +671,30 @@ static struct platform_driver msm_restart_driver = {
 		.of_match_table = of_match_ptr(of_msm_restart_match),
 	},
 };
+
+#ifdef CONFIG_MSM_DLOAD_MODE
+static int __init download_mode_setup(char *p)
+{
+	unsigned int value = 0;
+
+	if (NULL == p) {
+		pr_err("%s: input null\n", __func__);
+		return -EINVAL;
+	}
+
+	/* from string to unsigned int */
+	if (kstrtouint(p, 0, &value) < 0) {
+		pr_err("%s: Failed to get download mode\n", __func__);
+		return -EINVAL;
+	}
+
+	download_mode = value;
+
+	return 0;
+}
+
+early_param("restart.download_mode", download_mode_setup);
+#endif
 
 static int __init msm_restart_init(void)
 {
