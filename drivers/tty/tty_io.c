@@ -3533,6 +3533,8 @@ void __init console_init(void)
 {
 	initcall_t *call;
 
+	printk(KERN_INFO "Boot_monitor set stage:KERNEL_CONSOLE_INITCALL\n");
+
 	/* Setup the default TTY line discipline. */
 	tty_ldisc_begin();
 
