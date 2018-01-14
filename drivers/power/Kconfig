@@ -616,6 +616,10 @@ config MSM_BCL_PERIPHERAL_CTL
 	  provides routines to configure and monitor the BCL
 	  PMIC peripheral.
 
+config HUAWEI_PMU_DSM
+	bool "huawei dsm charger"
+	depends on HUAWEI_DSM
+
 source "drivers/power/reset/Kconfig"
 
 endif # POWER_SUPPLY
