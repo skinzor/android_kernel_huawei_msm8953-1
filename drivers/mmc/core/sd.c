@@ -27,6 +27,27 @@
 #include "sd.h"
 #include "sd_ops.h"
 
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+#include <linux/mmc/dsm_sdcard.h>
+u32 sd_manfid;
+struct dsm_sdcard_cmd_log dsm_sdcard_cmd_logs[] =
+{
+	{"CMD8 : ",				0,		0},
+	{"CMD55 : ",    		0,		0},
+	{"ACMD41: ",			0,		0},
+	{"CMD2_RESP0 : ",		0,		0},
+	{"CMD2_RESP1 : ",		0,		0},
+	{"CMD2_RESP2 : ",		0,		0},
+	{"CMD2_RESP3 : ",		0,		0},
+	{"CMD3 : ",				0,		0},
+	{"CMD9_RESP0 : ",		0,		0},
+	{"CMD9_RESP1 : ",		0,		0},
+	{"CMD9_RESP2 : ",		0,		0},
+	{"CMD9_RESP3 : ",		0,		0},
+	{"CMD7 : ",				0,		0},
+	{"Report Uevent : ",	0,		0},
+};
+#endif
 #define UHS_SDR104_MIN_DTR	(100 * 1000 * 1000)
 #define UHS_DDR50_MIN_DTR	(50 * 1000 * 1000)
 #define UHS_SDR50_MIN_DTR	(50 * 1000 * 1000)
@@ -254,6 +275,8 @@ static int mmc_read_ssr(struct mmc_card *card)
 
 	for (i = 0; i < 16; i++)
 		ssr[i] = be32_to_cpu(ssr[i]);
+
+	card->ssr.speed_class = UNSTUFF_BITS(ssr, 440 - 384, 8);
 
 	/*
 	 * UNSTUFF_BITS only works with four u32s so we have to offset the
@@ -754,6 +777,8 @@ MMC_DEV_ATTR(manfid, "0x%06x\n", card->cid.manfid);
 MMC_DEV_ATTR(name, "%s\n", card->cid.prod_name);
 MMC_DEV_ATTR(oemid, "0x%04x\n", card->cid.oemid);
 MMC_DEV_ATTR(serial, "0x%08x\n", card->cid.serial);
+MMC_DEV_ATTR(speed_class, "0x%08x\n", card->ssr.speed_class);
+MMC_DEV_ATTR(state, "0x%08x\n", card->state);
 
 
 static struct attribute *sd_std_attrs[] = {
@@ -769,6 +794,8 @@ static struct attribute *sd_std_attrs[] = {
 	&dev_attr_name.attr,
 	&dev_attr_oemid.attr,
 	&dev_attr_serial.attr,
+	&dev_attr_speed_class.attr,
+	&dev_attr_state.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(sd_std);
@@ -784,7 +811,12 @@ int mmc_sd_get_cid(struct mmc_host *host, u32 ocr, u32 *cid, u32 *rocr)
 {
 	int err;
 	u32 max_current;
-	int retries = 10;
+
+	/*
+	 * change retry time from 10 to 5,to avoid suspend or resume 12s
+	 * timeout panic,especially bad card
+	 */
+	int retries = 5;
 	u32 pocr = ocr;
 
 try_again:
@@ -860,6 +892,11 @@ int mmc_sd_get_csd(struct mmc_host *host, struct mmc_card *card)
 {
 	int err;
 
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+	int buff_len;
+	char *log_buff;
+#endif
+
 	/*
 	 * Fetch CSD from card.
 	 */
@@ -868,8 +905,32 @@ int mmc_sd_get_csd(struct mmc_host *host, struct mmc_card *card)
 		return err;
 
 	err = mmc_decode_csd(card);
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+	if(!strcmp(mmc_hostname(host), "mmc1"))
+	{
+		 dsm_sdcard_cmd_logs[DSM_SDCARD_CMD9_R0].value = card->raw_csd[0];
+		 dsm_sdcard_cmd_logs[DSM_SDCARD_CMD9_R1].value = card->raw_csd[1];
+		 dsm_sdcard_cmd_logs[DSM_SDCARD_CMD9_R2].value = card->raw_csd[2];
+		 dsm_sdcard_cmd_logs[DSM_SDCARD_CMD9_R3].value = card->raw_csd[3];
+	}
+
+	if (err)
+	{
+		if(-ENOMEDIUM != err && -ETIMEDOUT != err
+		&& !strcmp(mmc_hostname(host), "mmc1") && !dsm_client_ocuppy(sdcard_dclient))
+		{
+			log_buff = dsm_sdcard_get_log(DSM_SDCARD_CMD9_R3,err);
+			buff_len = strlen(log_buff);
+			dsm_client_copy(sdcard_dclient,log_buff,buff_len + 1);
+			dsm_client_notify(sdcard_dclient, DSM_SDCARD_CMD9_RESP_ERR);
+		}
+		return err;
+	}
+#else
 	if (err)
 		return err;
+#endif
 
 	return 0;
 }
@@ -997,6 +1058,10 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 	u32 cid[4];
 	u32 rocr = 0;
 
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+	int i=0;
+#endif
+
 	BUG_ON(!host);
 	WARN_ON(!host->claimed);
 
@@ -1021,6 +1086,17 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 		card->type = MMC_TYPE_SD;
 		memcpy(card->raw_cid, cid, sizeof(card->raw_cid));
 	}
+
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+	sd_manfid = cid[0]>>24;
+	if(!strcmp(mmc_hostname(host), "mmc1"))
+	{
+		for(i=0; i< DSM_SDCARD_CMD_MAX; i++)
+		{
+			dsm_sdcard_cmd_logs[i].manfid = sd_manfid;
+		}
+	}
+#endif
 
 	/*
 	 * For native busses:  get card RCA and quit open drain mode.
@@ -1095,7 +1171,6 @@ static int mmc_sd_init_card(struct mmc_host *host, u32 ocr,
 
 	card->clk_scaling_highest = mmc_sd_get_max_clock(card);
 	card->clk_scaling_lowest = host->f_min;
-
 	return 0;
 
 free_card:
@@ -1252,6 +1327,7 @@ static int _mmc_sd_resume(struct mmc_host *host)
 	int err = 0;
 #ifdef CONFIG_MMC_PARANOID_SD_INIT
 	int retries;
+	int delayTime;
 #endif
 
 	BUG_ON(!host);
@@ -1264,18 +1340,28 @@ static int _mmc_sd_resume(struct mmc_host *host)
 
 	mmc_power_up(host, host->card->ocr);
 #ifdef CONFIG_MMC_PARANOID_SD_INIT
-	retries = 5;
+	/*
+	 * change retry time from 5 to 4,to avoid suspend or resume 12s
+	 * timeout panic,especially bad card
+	 */
+	retries = 4;
+	delayTime = 5;
 	while (retries) {
 		err = mmc_sd_init_card(host, host->card->ocr, host->card);
-
+		if (host->ops->get_cd && host->ops->get_cd(host) == 0) {
+			printk(KERN_ERR "%s(%s): found no card (%d). Stop retrying\n",
+			       __func__, mmc_hostname(host), err);
+			break;
+		}
 		if (err) {
 			printk(KERN_ERR "%s: Re-init card rc = %d (retries = %d)\n",
 			       mmc_hostname(host), err, retries);
 			retries--;
 			mmc_power_off(host);
-			usleep_range(5000, 5500);
+			usleep_range(delayTime * 1000, delayTime * 1000 + 500);
 			mmc_power_up(host, host->card->ocr);
 			mmc_select_voltage(host, host->card->ocr);
+			delayTime *= 2;
 			continue;
 		}
 		break;
@@ -1290,8 +1376,9 @@ static int _mmc_sd_resume(struct mmc_host *host)
 		goto out;
 	}
 	mmc_card_clr_suspended(host->card);
-
+       mmc_release_host(host);
 	err = mmc_resume_clk_scaling(host);
+       mmc_claim_host(host);
 	if (err) {
 		pr_err("%s: %s: fail to resume clock scaling (%d)\n",
 			mmc_hostname(host), __func__, err);
@@ -1343,7 +1430,7 @@ static int mmc_sd_runtime_suspend(struct mmc_host *host)
 /*
  * Callback for runtime_resume.
  */
-static int mmc_sd_runtime_resume(struct mmc_host *host)
+int mmc_sd_runtime_resume(struct mmc_host *host)
 {
 	int err;
 
@@ -1357,6 +1444,7 @@ static int mmc_sd_runtime_resume(struct mmc_host *host)
 
 	return 0;
 }
+EXPORT_SYMBOL(mmc_sd_runtime_resume);
 
 static int mmc_sd_power_restore(struct mmc_host *host)
 {
@@ -1408,6 +1496,7 @@ int mmc_attach_sd(struct mmc_host *host)
 	u32 ocr, rocr;
 #ifdef CONFIG_MMC_PARANOID_SD_INIT
 	int retries;
+	int delayTime;
 #endif
 
 	BUG_ON(!host);
@@ -1447,14 +1536,22 @@ int mmc_attach_sd(struct mmc_host *host)
 	 */
 #ifdef CONFIG_MMC_PARANOID_SD_INIT
 	retries = 5;
+	delayTime = 5;
 	while (retries) {
 		err = mmc_sd_init_card(host, rocr, NULL);
+		if (host->ops->get_cd && host->ops->get_cd(host) == 0) {
+			printk(KERN_ERR "%s(%s): found no card (%d). Stop retrying\n",
+			       __func__, mmc_hostname(host), err);
+			goto err;
+		}
+
 		if (err) {
 			retries--;
 			mmc_power_off(host);
-			usleep_range(5000, 5500);
+			usleep_range(delayTime * 1000, delayTime * 1000 + 500);
 			mmc_power_up(host, rocr);
 			mmc_select_voltage(host, rocr);
+			delayTime *= 2;
 			continue;
 		}
 		break;
@@ -1497,3 +1594,43 @@ err:
 	return err;
 }
 
+#ifdef CONFIG_HUAWEI_SDCARD_DSM
+/*
+ * get the error cmd logs and previous cmds logs
+*/
+char *dsm_sdcard_get_log(int cmd,int err)
+{
+	int i;
+	int ret = 0;
+	int buff_size = sizeof(g_dsm_log_sum);
+	char *dsm_log_buff = g_dsm_log_sum;
+
+	memset(g_dsm_log_sum,0,buff_size);
+
+	ret = snprintf(dsm_log_buff,buff_size,"Err : %d\n",err);
+	dsm_log_buff += ret;
+	buff_size -= ret;
+
+	for(i = 0; i <= cmd; i++)
+	{
+		ret = snprintf(dsm_log_buff,buff_size,
+		"%s%08x sdcard manufactory id is 0x%x\n",dsm_sdcard_cmd_logs[i].log,\
+		dsm_sdcard_cmd_logs[i].value,dsm_sdcard_cmd_logs[i].manfid);
+		if(ret > buff_size -1)
+		{
+			printk(KERN_ERR "Buff size is not enough\n");
+			printk(KERN_ERR "%s",g_dsm_log_sum);
+			return g_dsm_log_sum;
+		}
+
+		dsm_log_buff += ret;
+		buff_size -= ret;
+	}
+
+	pr_debug("DSM_DEBUG %s",g_dsm_log_sum);
+
+	return g_dsm_log_sum;
+
+}
+EXPORT_SYMBOL(dsm_sdcard_get_log);
+#endif

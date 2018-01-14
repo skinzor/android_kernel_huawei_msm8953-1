@@ -22,6 +22,9 @@
 #include <linux/mmc/card.h>
 #include <linux/mmc/host.h>
 #include "queue.h"
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+#include <linux/mmc/dsm_emmc.h>
+#endif
 
 #define MMC_QUEUE_BOUNCESZ	65536
 
@@ -31,6 +34,9 @@
  * manage to keep the high write throughput.
  */
 #define DEFAULT_NUM_REQS_TO_START_PACK 17
+
+extern struct scatterlist* sdhci_get_cur_sg(void);
+extern struct scatterlist* sdhci_get_prev_sg(void);
 
 /*
  * Prepare a MMC request. This just filters out odd stuff.
@@ -439,6 +445,25 @@ int mmc_init_queue(struct mmc_queue *mq, struct mmc_card *card,
 		blk_queue_max_segment_size(mq->queue, host->max_seg_size);
 retry:
 		blk_queue_max_segments(mq->queue, host->max_segs);
+		/*if sdcard, use cache prealloced in host malloc*/
+		if(MMC_TYPE_SD  == card->type){
+			mqrq_cur->sg = sdhci_get_cur_sg();
+			if(NULL == mqrq_cur->sg){
+				printk(KERN_ERR "%s:get cur_sg cache failed\n", __FUNCTION__);
+				goto cleanup_queue;
+			}
+
+
+			mqrq_prev->sg = sdhci_get_prev_sg();
+			if(NULL == mqrq_prev->sg){
+				printk("%s:get prev_sg cache failed\n", __FUNCTION__);
+				goto cleanup_queue;
+			}
+
+			pr_info("sdcard use cache sucess\n");
+		}
+		else
+		{
 
 		mqrq_cur->sg = mmc_alloc_sg(host->max_segs, &ret);
 		if (ret == -ENOMEM)
@@ -451,7 +476,7 @@ retry:
 			goto prev_sg_alloc_failed;
 		else if (ret)
 			goto cleanup_queue;
-
+        }
 		goto success;
 
 prev_sg_alloc_failed:
@@ -490,12 +515,16 @@ success:
 	mqrq_prev->bounce_sg = NULL;
 
  cleanup_queue:
-	kfree(mqrq_cur->sg);
+	if(MMC_TYPE_SD  != card->type){
+		kfree(mqrq_cur->sg);
+	}
 	mqrq_cur->sg = NULL;
 	kfree(mqrq_cur->bounce_buf);
 	mqrq_cur->bounce_buf = NULL;
 
-	kfree(mqrq_prev->sg);
+	if(MMC_TYPE_SD  != card->type){
+		kfree(mqrq_prev->sg);
+	}
 	mqrq_prev->sg = NULL;
 	kfree(mqrq_prev->bounce_buf);
 	mqrq_prev->bounce_buf = NULL;
@@ -510,6 +539,8 @@ void mmc_cleanup_queue(struct mmc_queue *mq)
 	unsigned long flags;
 	struct mmc_queue_req *mqrq_cur = mq->mqrq_cur;
 	struct mmc_queue_req *mqrq_prev = mq->mqrq_prev;
+
+    struct mmc_card *card = mq->card;
 
 	/* Make sure the queue isn't suspended, as that will deadlock */
 	mmc_queue_resume(mq);
@@ -526,7 +557,10 @@ void mmc_cleanup_queue(struct mmc_queue *mq)
 	kfree(mqrq_cur->bounce_sg);
 	mqrq_cur->bounce_sg = NULL;
 
-	kfree(mqrq_cur->sg);
+	/*do not free sdcard cache*/
+	if(MMC_TYPE_SD  != card->type){
+		kfree(mqrq_cur->sg);
+	};
 	mqrq_cur->sg = NULL;
 
 	kfree(mqrq_cur->bounce_buf);
@@ -535,7 +569,10 @@ void mmc_cleanup_queue(struct mmc_queue *mq)
 	kfree(mqrq_prev->bounce_sg);
 	mqrq_prev->bounce_sg = NULL;
 
-	kfree(mqrq_prev->sg);
+	/*do not free sdcard cache*/
+	if(MMC_TYPE_SD  != card->type){
+		kfree(mqrq_prev->sg);
+	}
 	mqrq_prev->sg = NULL;
 
 	kfree(mqrq_prev->bounce_buf);
@@ -606,9 +643,14 @@ enum blk_eh_timer_return mmc_cmdq_rq_timed_out(struct request *req)
 {
 	struct mmc_queue *mq = req->q->queuedata;
 
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+	DSM_EMMC_LOG(mq->card, DSM_EMMC_HOST_TIMEOUT_ERR,
+		"%s:%s request with tag: %d flags: 0x%llx timed out\n",
+	       __FUNCTION__, mmc_hostname(mq->card->host), req->tag, req->cmd_flags);
+#else
 	pr_err("%s: request with tag: %d flags: 0x%llx timed out\n",
 	       mmc_hostname(mq->card->host), req->tag, req->cmd_flags);
-
+#endif
 	return mq->cmdq_req_timed_out(req);
 }
 
