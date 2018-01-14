@@ -5569,7 +5569,9 @@ static void ufshcd_err_handler(struct work_struct *work)
 	bool needs_reset = false;
 
 	hba = container_of(work, struct ufs_hba, eh_work);
-
+	ufsdbg_set_err_state(hba);
+	pm_runtime_get_sync(hba->dev);
+	ufshcd_hold_all(hba);
 	spin_lock_irqsave(hba->host->host_lock, flags);
 	ufsdbg_set_err_state(hba);
 
