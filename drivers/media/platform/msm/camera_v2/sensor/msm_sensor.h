@@ -61,6 +61,8 @@ struct msm_sensor_fn_t {
 	int (*sensor_power_down)(struct msm_sensor_ctrl_t *);
 	int (*sensor_power_up)(struct msm_sensor_ctrl_t *);
 	int (*sensor_match_id)(struct msm_sensor_ctrl_t *);
+	/* optimize camera print mipi packet and frame count log*/
+	int (*sensor_read_framecount)(struct msm_sensor_ctrl_t *);
 };
 
 struct msm_sensor_ctrl_t {
@@ -84,10 +86,19 @@ struct msm_sensor_ctrl_t {
 	enum msm_sensor_state_t sensor_state;
 	uint8_t is_probe_succeed;
 	uint32_t id;
+	/* optimize camera print mipi packet and frame count log*/
+	/*add a delay work for read frame count when stream on*/
+	struct delayed_work frm_cnt_work;
 	struct device_node *of_node;
 	enum msm_camera_stream_type_t camera_stream_type;
 	uint32_t set_mclk_23880000;
 	uint8_t is_csid_tg_mode;
+	struct msm_sensor_afc_otp_info afc_otp_info;
+	struct msm_sensor_mmi_otp_flag hw_otp_check_flag;
+	struct msm_sensor_awb_otp_info awb_otp_info;
+	struct msm_sensor_lsc_otp_info lsc_otp_info;
+	struct msm_sensor_vendor_otp_info vendor_otp_info;
+    const char *product_name;
 };
 
 int msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp);

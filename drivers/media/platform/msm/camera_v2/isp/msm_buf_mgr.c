@@ -730,8 +730,8 @@ static int msm_isp_update_put_buf_cnt(struct msm_isp_buf_mgr *buf_mgr,
 	rc = msm_isp_update_put_buf_cnt_unsafe(buf_mgr, id, bufq_handle,
 		buf_index, tv, frame_id, pingpong_bit);
 	if (-ENOTEMPTY == rc) {
-		pr_err("%s: Error! Uncleared put_buf_mask for pingpong(%d) from vfe %d bufq 0x%x buf_idx %d\n",
-			__func__, pingpong_bit, id, bufq_handle, buf_index);
+		pr_err("%s: Error! Uncleared put_buf_mask for pingpong(%d) from vfe %d bufq 0x%x buf_idx %d stream_id %x\n",
+			__func__, pingpong_bit, id, bufq_handle, buf_index, bufq->stream_id);
 		rc = -EFAULT;
 	}
 	spin_unlock_irqrestore(&bufq->bufq_lock, flags);

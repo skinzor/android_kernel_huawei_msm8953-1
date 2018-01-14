@@ -95,6 +95,9 @@ struct msm_flash_ctrl_t {
 
 	/* flash state */
 	enum msm_camera_flash_state_t flash_state;
+
+    /* flash hw count */
+    int32_t flash_hw_cnt;
 };
 
 int msm_flash_i2c_probe(struct i2c_client *client,

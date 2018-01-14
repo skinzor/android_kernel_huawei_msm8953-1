@@ -12,6 +12,9 @@ ccflags-y += -Idrivers/media/platform/msm/camera_v2/common
 
 obj-$(CONFIG_MSMB_CAMERA) += common/
 obj-$(CONFIG_MSMB_CAMERA) += msm.o
+obj-$(CONFIG_MSMB_CAMERA) += hw_camera_common.o
+obj-$(CONFIG_HUAWEI_DSM) += msm_camera_dsm.o
+obj-$(CONFIG_MSMB_CAMERA) += camerafs.o
 obj-$(CONFIG_MSMB_CAMERA) += camera/
 obj-$(CONFIG_MSMB_CAMERA) += msm_vb2/
 obj-$(CONFIG_MSMB_CAMERA) += sensor/

@@ -906,6 +906,27 @@ int msm_camera_init_gpio_pin_tbl(struct device_node *of_node,
 		rc = 0;
 	}
 
+	rc = of_property_read_u32(of_node, "qcom,gpio-cam-id", &val);
+	if (rc != -EINVAL) {
+		if (rc < 0) {
+			pr_err("%s:%dread qcom,gpio-cam-id failed rc %d\n",
+				__func__, __LINE__, rc);
+			goto ERROR;
+		} else if (val >= gpio_array_size) {
+			pr_err("%s:%d qcom,gpio-cam-id invalid %d\n",
+				__func__, __LINE__, val);
+			rc = -EINVAL;
+			goto ERROR;
+		}
+		gconf->gpio_num_info->gpio_num[SENSOR_GPIO_CAM_ID] =
+			gpio_array[val];
+		gconf->gpio_num_info->valid[SENSOR_GPIO_CAM_ID] = 1;
+		CDBG("%s qcom,gpio-cam-id %d index =%d \n", __func__,
+			gconf->gpio_num_info->gpio_num[SENSOR_GPIO_CAM_ID], val);
+	} else {
+		rc = 0;
+	}
+
 	rc = of_property_read_u32(of_node, "qcom,gpio-flash-en", &val);
 	if (rc != -EINVAL) {
 		if (rc < 0) {
@@ -1337,7 +1358,7 @@ int msm_camera_power_up(struct msm_camera_power_ctrl_t *ctrl,
 	int rc = 0, index = 0, no_gpio = 0, ret = 0;
 	struct msm_sensor_power_setting *power_setting = NULL;
 
-	CDBG("%s:%d\n", __func__, __LINE__);
+	pr_info("%s:%d\n", __func__, __LINE__);
 	if (!ctrl || !sensor_i2c_client) {
 		pr_err("failed ctrl %pK sensor_i2c_client %pK\n", ctrl,
 			sensor_i2c_client);
@@ -1468,7 +1489,7 @@ int msm_camera_power_up(struct msm_camera_power_ctrl_t *ctrl,
 			goto power_up_failed;
 		}
 	}
-	CDBG("%s exit\n", __func__);
+	pr_info("%s exit\n", __func__);
 	return 0;
 power_up_failed:
 	pr_err("%s:%d failed\n", __func__, __LINE__);
@@ -1562,7 +1583,7 @@ int msm_camera_power_down(struct msm_camera_power_ctrl_t *ctrl,
 	struct msm_sensor_power_setting *pd = NULL;
 	struct msm_sensor_power_setting *ps;
 
-	CDBG("%s:%d\n", __func__, __LINE__);
+	pr_info("%s:%d\n", __func__, __LINE__);
 	if (!ctrl || !sensor_i2c_client) {
 		pr_err("failed ctrl %pK sensor_i2c_client %pK\n", ctrl,
 			sensor_i2c_client);
@@ -1654,14 +1675,14 @@ int msm_camera_power_down(struct msm_camera_power_ctrl_t *ctrl,
 				ctrl->pinctrl_info.gpio_state_suspend);
 		if (ret)
 			pr_err("%s:%d cannot set pin to suspend state",
-				__func__, __LINE__);
+				__func__, __LINE__); 
 		devm_pinctrl_put(ctrl->pinctrl_info.pinctrl);
 	}
 	ctrl->cam_pinctrl_status = 0;
 	msm_camera_request_gpio_table(
 		ctrl->gpio_conf->cam_gpio_req_tbl,
 		ctrl->gpio_conf->cam_gpio_req_tbl_size, 0);
-	CDBG("%s exit\n", __func__);
+	pr_info("%s exit\n", __func__);
 	return 0;
 }
 

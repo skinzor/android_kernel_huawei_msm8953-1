@@ -193,7 +193,8 @@ static int32_t msm_isp_stats_buf_divert(struct vfe_device *vfe_dev,
 
 	if (done_buf)
 		buf_index = done_buf->buf_idx;
-
+	ISP_DBG("%s: vfe %d ping pong bit %d buf idx  %d farme id %d \n", __func__,
+			vfe_dev->pdev->id, pingpong_bit, buf_index, frame_id);
 	rc = vfe_dev->buf_mgr->ops->update_put_buf_cnt(
 		vfe_dev->buf_mgr, vfe_dev->pdev->id, stream_info->bufq_handle,
 		buf_index, &ts->buf_time,
@@ -316,7 +317,7 @@ void msm_isp_process_stats_irq(struct vfe_device *vfe_dev,
 		get_comp_mask(irq_status0, irq_status1);
 	stats_irq_mask = vfe_dev->hw_info->vfe_ops.stats_ops.
 		get_wm_mask(irq_status0, irq_status1);
-	if (!(stats_comp_mask || stats_irq_mask))
+	if (!(stats_comp_mask || stats_irq_mask) || vfe_dev->ignore_irq)
 		return;
 
 	ISP_DBG("%s: vfe %d status: 0x%x\n", __func__, vfe_dev->pdev->id,
@@ -716,7 +717,7 @@ static int msm_isp_start_stats_stream(struct vfe_device *vfe_dev,
 			comp_stats_mask[stream_info->composite_flag-1] |=
 				1 << idx;
 
-		ISP_DBG("%s: stats_mask %x %x active streams %d\n",
+		ISP_HW_DBG("%s: stats_mask %x %x active streams %d\n",
 			__func__, comp_stats_mask[0],
 			comp_stats_mask[1],
 			stats_data->num_active_stream);
@@ -797,7 +798,7 @@ static int msm_isp_stop_stats_stream(struct vfe_device *vfe_dev,
 		msm_isp_stats_cfg_stream_scratch(vfe_dev, stream_info,
 						VFE_PONG_FLAG);
 
-		ISP_DBG("%s: stats_mask %x %x active streams %d\n",
+		ISP_HW_DBG("%s: stats_mask %x %x active streams %d\n",
 			__func__, comp_stats_mask[0],
 			comp_stats_mask[1],
 			stats_data->num_active_stream);

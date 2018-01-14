@@ -12,7 +12,7 @@ obj-$(CONFIG_MSM_VIDC_V4L2) := 	msm_v4l2_vidc.o \
 				vidc_hfi.o \
 				venus_boot.o \
 				msm_vidc_dcvs.o
-
+obj-$(CONFIG_HUAWEI_DSM) += msm_camera_vid_dsm.o
 obj-$(CONFIG_MSM_VIDC_V4L2) += governors/
 
 obj-$(CONFIG_MSM_VIDC_VMEM) += vmem/
