@@ -29,6 +29,39 @@
 #include <linux/spmi.h>
 #include <linux/usb/class-dual-role.h>
 
+#ifdef CONFIG_SWITCH_FSA9685
+#include <linux/usb/switch_chip.h>
+#endif
+#ifdef CONFIG_HUAWEI_TYPEC
+#include <linux/usb/hw_typec.h>
+#endif
+#ifdef CONFIG_HUAWEI_USB
+#include <linux/usb/huawei_usb.h>
+#endif
+
+#ifdef CONFIG_HUAWEI_USB
+#undef pr_err
+#define pr_err usb_logs_err
+
+#undef pr_info
+#define pr_info usb_logs_info
+
+/* log here is important so set log level to info */
+#undef pr_debug
+#define pr_debug usb_logs_info
+
+#undef dev_info
+#define dev_info usb_dev_info
+
+#undef dev_err
+#define dev_err usb_dev_err
+
+/* log here is important so set log level to info */
+#undef dev_dbg
+#define dev_dbg usb_dev_info
+#endif
+
+
 #define CREATE_MASK(NUM_BITS, POS) \
 	((unsigned char) (((1 << (NUM_BITS)) - 1) << (POS)))
 #define TYPEC_MASK(MSB_BIT, LSB_BIT) \
@@ -49,15 +82,32 @@
 #define TYPEC_DFP_STATUS_REG(base)	(base +	0x09)
 #define VALID_DFP_MASK			TYPEC_MASK(6, 4)
 
-#define TYPEC_SW_CTL_REG(base)		(base + 0x52)
+#define TYPEC_INT_EN_CLR(base)          (base + 0x16)
+#define VBUS_ERR_CLEAR                   BIT(6)
 
-#define TYPEC_STD_MA			900
+/*
+ * 80-P2536-2X
+ * XX00 XXXX : DRP, default
+ * XX10 XXXX : UFP
+ * XX01 XXXX : DFP
+ * XXXX XX0X : OTG Threshold is 1.6V, default
+ * XXXX XX1X : OTG Threshold is 0.6V
+ */
+/* Milan do not support USB3.0, default mode current should be 500mA */
+#define TYPEC_SW_CTL_REG(base)		(base + 0x52)
+#define TYPEC_SW_CTL(base)		(base + 0x52)
+#define TYPEC_MODE_MASK			TYPEC_MASK(5, 4)
+#define TYPEC_UFP_MODE_BIT		BIT(5)
+#define TYPEC_DFP_MODE_BIT		BIT(4)
+#define OTG_THRESHOLD_BIT       BIT(1)
+
+#define TYPEC_STD_MA			500
 #define TYPEC_MED_MA			1500
 #define TYPEC_HIGH_MA			3000
 
 #define QPNP_TYPEC_DEV_NAME	"qcom,qpnp-typec"
 #define TYPEC_PSY_NAME		"typec"
-#define DUAL_ROLE_DESC_NAME	"otg_default"
+#define DUAL_ROLE_DESC_NAME	"dual_role"
 
 enum cc_line_state {
 	CC_1,
@@ -113,6 +163,9 @@ struct qpnp_typec_chip {
 	enum of_gpio_flags	gpio_flag;
 	int			typec_state;
 
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+	struct typec_device_info di;
+#endif
 	/* Dual role support */
 	bool				role_reversal_supported;
 	bool				in_force_mode;
@@ -127,6 +180,82 @@ struct qpnp_typec_chip {
 static char *mode_text[] = {
 	"ufp", "dfp", "none"
 };
+
+#ifdef CONFIG_HUAWEI_TYPEC
+static struct qpnp_typec_chip *g_chip = NULL;
+
+static enum typec_cc_orient qpnp_typec_detect_cc_orientation(void)
+{
+	enum typec_cc_orient cc_orient = TYPEC_ORIENT_NOT_READY;
+
+	if (!g_chip) {
+		pr_err("no chip found\n");
+		return cc_orient;
+	}
+
+	pr_info("cc_line_state = %d\n", g_chip->cc_line_state);
+	switch (g_chip->cc_line_state) {
+	case CC_1:
+		cc_orient = TYPEC_ORIENT_CC1;
+		break;
+	case CC_2:
+		cc_orient = TYPEC_ORIENT_CC2;
+		break;
+	default:
+		cc_orient = TYPEC_ORIENT_NOT_READY;
+	}
+
+	return cc_orient;
+}
+
+static void typec_wake_lock(struct typec_device_info *di)
+{
+	if (!wake_lock_active(&di->wake_lock)) {
+		pr_err("usb typec wake lock\n");
+		wake_lock(&di->wake_lock);
+	}
+}
+
+static void typec_wake_unlock(struct typec_device_info *di)
+{
+	if (wake_lock_active(&di->wake_lock)) {
+		pr_err("usb typec wake unlock\n");
+		wake_unlock(&di->wake_lock);
+	}
+}
+
+static enum typec_input_current qpnp_typec_detect_input_current(void)
+{
+	enum typec_input_current input_current = TYPEC_DEV_CURRENT_NOT_READY;
+
+	if (!g_chip) {
+		pr_err("no chip found\n");
+		return input_current;
+	}
+
+	pr_info("current_ma = %d\n", g_chip->current_ma);
+	switch (g_chip->current_ma) {
+	case TYPEC_STD_MA:
+		input_current = TYPEC_DEV_CURRENT_DEFAULT;
+		break;
+	case TYPEC_MED_MA:
+		input_current = TYPEC_DEV_CURRENT_MID;
+		break;
+	case TYPEC_HIGH_MA:
+		input_current = TYPEC_DEV_CURRENT_HIGH;
+		break;
+	default:
+		input_current = TYPEC_DEV_CURRENT_NOT_READY;
+	}
+
+	return input_current;
+}
+
+static struct typec_device_ops qpnp_typec_ops = {
+	.detect_cc_orientation = qpnp_typec_detect_cc_orientation,
+	.detect_input_current = qpnp_typec_detect_input_current,
+};
+#endif
 
 /* SPMI operations */
 static int __qpnp_typec_read(struct spmi_device *spmi, u8 *val, u16 addr,
@@ -205,7 +334,325 @@ out:
 	return rc;
 }
 
+static int qpnp_typec_write(struct qpnp_typec_chip *chip, u8 *val, u16 addr,
+			    int count)
+{
+	int rc = 0;
+	struct spmi_device *spmi = chip->spmi;
 
+	if (addr == 0) {
+		dev_err(chip->dev,
+			"addr cannot be zero addr=0x%04x sid=0x%02x rc=%d\n",
+			addr, spmi->sid, rc);
+		return -EINVAL;
+	}
+
+	rc = spmi_ext_register_writel(spmi->ctrl, spmi->sid, addr, val, count);
+	if (rc) {
+		dev_err(chip->dev,
+			"write failed addr=0x%04x sid=0x%02x rc=%d\n", addr,
+			spmi->sid, rc);
+		return rc;
+	}
+
+	return 0;
+}
+
+static void qpnp_typec_mode_ufp(struct qpnp_typec_chip *chip)
+{
+	pr_info("\n");
+	qpnp_typec_masked_write(chip,TYPEC_SW_CTL(chip->base),
+                                TYPEC_MODE_MASK,TYPEC_UFP_MODE_BIT);
+}
+
+static void qpnp_typec_mode_dfp(struct qpnp_typec_chip *chip)
+{
+	pr_info("\n");
+	qpnp_typec_masked_write(chip,TYPEC_SW_CTL(chip->base),
+                                 TYPEC_MODE_MASK, TYPEC_DFP_MODE_BIT);
+}
+
+static void qpnp_typec_mode_drp(struct qpnp_typec_chip *chip)
+{
+	pr_info("\n");
+	qpnp_typec_masked_write(chip,TYPEC_SW_CTL(chip->base),
+				TYPEC_MODE_MASK,0x00);
+}
+
+#define THRESHOLD_1P6 0
+#define THRESHOLD_0P6 1
+static void qpnp_typec_otg_threshold(struct qpnp_typec_chip *chip,
+				     int threshold)
+{
+	if (THRESHOLD_1P6 == threshold) {
+		pr_info("set to 1.6\n");
+		qpnp_typec_masked_write(chip,TYPEC_SW_CTL(chip->base),
+					OTG_THRESHOLD_BIT,0x00);
+	} else if (THRESHOLD_0P6 == threshold) {
+		pr_info("set to 0.6\n");
+		qpnp_typec_masked_write(chip,TYPEC_SW_CTL(chip->base),
+					OTG_THRESHOLD_BIT, OTG_THRESHOLD_BIT);
+	} else {
+		pr_err("invalid input\n");
+	}
+}
+
+static ssize_t mode_show(struct device *pdev,
+			 struct device_attribute *attr, char *buf)
+{
+	struct qpnp_typec_chip *chip = g_chip;
+	int rc = 0;
+	u8 reg = 0;
+
+	rc = qpnp_typec_read(chip, &reg, TYPEC_SW_CTL(chip->base), 1);
+	pr_info("reg TYPEC_SW_CTL =0x%02x\n", reg);
+
+	return snprintf(buf, PAGE_SIZE, "TYPEC_SW_CTL=0x%02x\n", reg);
+}
+
+static ssize_t mode_store(struct device *pdev, struct device_attribute *attr,
+			  const char *buf, size_t size)
+{
+	char buffer[64] = { 0 };
+
+	if (sscanf(buf, "%s", buffer) != 1) {
+		pr_err("invalid input\n");
+	}
+
+	if (!strcmp(buffer, "ufp")) {
+		qpnp_typec_mode_ufp(g_chip);
+	} else if (!strcmp(buffer, "dfp")) {
+		qpnp_typec_mode_dfp(g_chip);
+	} else if (!strcmp(buffer, "drp")) {
+		qpnp_typec_mode_drp(g_chip);
+	} else if (!strcmp(buffer, "0p6")) {
+		qpnp_typec_otg_threshold(g_chip, THRESHOLD_0P6);
+	} else if (!strcmp(buffer, "1p6")) {
+		qpnp_typec_otg_threshold(g_chip, THRESHOLD_1P6);
+	} else {
+		pr_err("invalid input, only ufp dfp 0p6 1p6 supported\n");
+	}
+	return size;
+}
+
+static DEVICE_ATTR(mode, (S_IRUGO | S_IWUSR), mode_show, mode_store);
+static struct attribute *qpnp_attributes[] = {
+	&dev_attr_mode.attr,
+	NULL,
+};
+
+static const struct attribute_group qpnp_attr_group = {
+	.attrs = qpnp_attributes,
+};
+
+static int qpnp_create_sysfs(void)
+{
+	int ret = 0;
+	struct class *typec_class = NULL;
+	struct device *new_dev = NULL;
+
+	typec_class = hw_typec_get_class();
+	if (typec_class) {
+		new_dev = device_create(typec_class, NULL, 0, NULL, "qpnp");
+		ret = sysfs_create_group(&new_dev->kobj, &qpnp_attr_group);
+		if (ret) {
+			pr_err("sysfs create error\n");
+		}
+	}
+
+	return ret;
+}
+
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+static int qpnp_typec_handle_detach(struct qpnp_typec_chip *chip);
+
+static enum dual_role_property fusb_drp_properties[] = {
+	DUAL_ROLE_PROP_MODE,
+	DUAL_ROLE_PROP_PR,
+	DUAL_ROLE_PROP_DR,
+};
+
+ /* Callback for "cat /sys/class/dual_role_usb/otg_default/<property>" */
+static int dual_role_get_local_prop(struct dual_role_phy_instance *dual_role,
+				    enum dual_role_property prop,
+				    unsigned int *val)
+{
+	struct typec_device_info *di = dual_role_get_drvdata(dual_role);
+	int typec_state = 0;
+
+	if (!di || !g_chip)
+		return -EINVAL;
+
+	mutex_lock(&g_chip->typec_lock);
+	typec_state = g_chip->typec_state;
+	mutex_unlock(&g_chip->typec_lock);
+	if (typec_state == POWER_SUPPLY_TYPE_DFP) {
+		if (prop == DUAL_ROLE_PROP_MODE)
+			*val = DUAL_ROLE_PROP_MODE_DFP;
+		else if (prop == DUAL_ROLE_PROP_PR)
+			*val = DUAL_ROLE_PROP_PR_SRC;
+		else if (prop == DUAL_ROLE_PROP_DR)
+			*val = DUAL_ROLE_PROP_DR_HOST;
+		else
+			return -EINVAL;
+	} else if (typec_state == POWER_SUPPLY_TYPE_UFP) {
+		if (prop == DUAL_ROLE_PROP_MODE)
+			*val = DUAL_ROLE_PROP_MODE_UFP;
+		else if (prop == DUAL_ROLE_PROP_PR)
+			*val = DUAL_ROLE_PROP_PR_SNK;
+		else if (prop == DUAL_ROLE_PROP_DR)
+			*val = DUAL_ROLE_PROP_DR_DEVICE;
+		else
+			return -EINVAL;
+	} else {
+		if (prop == DUAL_ROLE_PROP_MODE)
+			*val = DUAL_ROLE_PROP_MODE_NONE;
+		else if (prop == DUAL_ROLE_PROP_PR)
+			*val = DUAL_ROLE_PROP_PR_NONE;
+		else if (prop == DUAL_ROLE_PROP_DR)
+			*val = DUAL_ROLE_PROP_DR_NONE;
+		else
+			return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* Decides whether userspace can change a specific property */
+static int dual_role_is_writeable(struct dual_role_phy_instance *drp,
+				  enum dual_role_property prop)
+{
+	if (prop == DUAL_ROLE_PROP_MODE)
+		return 1;
+	else
+		return 0;
+}
+
+/* 1. Check to see if current attached_state is same as requested state
+ * if yes, then, return.
+ * 2. Disonect current session
+ * 3. Set approrpriate mode (dfp or ufp)
+ * 4. wait for 1.5 secs to see if we get into the corresponding target state
+ * if yes, return
+ * 5. if not, fallback to Try.SNK
+ * 6. wait for 1.5 secs to see if we get into one of the attached states
+ * 7. return -EIO
+ * Also we have to fallback to Try.SNK state machine on cable disconnect
+ */
+static int dual_role_set_mode_prop(struct dual_role_phy_instance *dual_role,
+				   enum dual_role_property prop,
+				   const unsigned int *val)
+{
+	struct typec_device_info *di = dual_role_get_drvdata(dual_role);
+	struct qpnp_typec_chip *chip = g_chip;
+	int typec_state = 0;
+	int timeout = 0;
+	int ret = 0;
+
+	if (!di || !chip)
+		return -EINVAL;
+
+	if (*val != DUAL_ROLE_PROP_MODE_DFP && *val != DUAL_ROLE_PROP_MODE_UFP)
+		return -EINVAL;
+
+	typec_state = chip->typec_state;
+
+	if (typec_state != POWER_SUPPLY_TYPE_DFP
+	    && typec_state != POWER_SUPPLY_TYPE_UFP)
+		return 0;
+
+	if (typec_state == POWER_SUPPLY_TYPE_DFP
+	    && *val == DUAL_ROLE_PROP_MODE_DFP)
+		return 0;
+
+	if (typec_state == POWER_SUPPLY_TYPE_UFP
+	    && *val == DUAL_ROLE_PROP_MODE_UFP)
+		return 0;
+
+	pr_info("start\n");
+	mutex_lock(&chip->typec_lock);
+
+	/* AS DFP now, try reversing, form Source to Sink */
+	if (typec_state == POWER_SUPPLY_TYPE_DFP) {
+		pr_info("try reversing, form Source to Sink\n");
+		di->reverse_state = REVERSE_ATTEMPT;
+		di->sink_attached = false;
+
+		/* turns off VBUS first */
+		qpnp_typec_handle_detach(chip);
+		msleep(WAIT_VBUS_OFF_MS);
+
+		qpnp_typec_mode_ufp(chip);
+
+		/* AS UFP now, try reversing, form Sink to Source */
+	} else if (typec_state == POWER_SUPPLY_TYPE_UFP) {
+		pr_info("try reversing, form Sink to Source\n");
+		di->reverse_state = REVERSE_ATTEMPT;
+		qpnp_typec_handle_detach(chip);
+		qpnp_typec_mode_dfp(chip);
+	}
+
+	mutex_unlock(&chip->typec_lock);
+
+	reinit_completion(&di->reverse_completion);
+	timeout =
+	    wait_for_completion_timeout(&di->reverse_completion,
+					msecs_to_jiffies
+					(DUAL_ROLE_SET_MODE_WAIT_MS));
+	if (!timeout) {
+		pr_info("reverse failed, set mode to DRP\n");
+
+		/* set mode to DRP */
+		di->reverse_state = 0;
+		qpnp_typec_mode_drp(chip);
+
+		pr_info("wait for the attached state\n");
+		reinit_completion(&di->reverse_completion);
+		wait_for_completion_timeout(&di->reverse_completion,
+					    msecs_to_jiffies
+					    (DUAL_ROLE_SET_MODE_WAIT_MS));
+
+		ret = -EIO;
+	}
+
+	pr_info("end ret = %d\n", ret);
+
+	return ret;
+}
+
+/* Callback for "echo <value> >
+ *                      /sys/class/dual_role_usb/<name>/<property>"
+ * Block until the entire final state is reached.
+ * Blocking is one of the better ways to signal when the operation
+ * is done.
+ * This function tries to switch to Attached.SRC or Attached.SNK
+ * by forcing the mode into SRC or SNK.
+ * On failure, we fall back to Try.SNK state machine.
+ */
+static int dual_role_set_prop(struct dual_role_phy_instance *dual_role,
+			      enum dual_role_property prop,
+			      const unsigned int *val)
+{
+	if (prop == DUAL_ROLE_PROP_MODE)
+		return dual_role_set_mode_prop(dual_role, prop, val);
+	else
+		return -EINVAL;
+}
+
+static void typec_wdog_work(struct work_struct *w)
+{
+	struct typec_device_info *di =
+	    container_of(w, struct typec_device_info, g_wdog_work.work);
+	struct qpnp_typec_chip *chip =
+	    container_of(di, struct qpnp_typec_chip, di);
+
+	pr_info("start\n");
+	qpnp_typec_mode_drp(chip);
+	typec_wake_unlock(di);
+	pr_info("end\n");
+}
+
+#endif
 
 static int set_property_on_battery(struct qpnp_typec_chip *chip,
 				enum power_supply_property prop)
@@ -385,9 +832,6 @@ static int qpnp_typec_handle_detach(struct qpnp_typec_chip *chip)
 			pr_err("Failed to set DRP mode rc=%d\n", rc);
 	}
 
-	if (chip->dr_inst)
-		dual_role_instance_changed(chip->dr_inst);
-
 	return rc;
 }
 
@@ -439,10 +883,46 @@ static irqreturn_t ufp_detect_handler(int irq, void *_chip)
 	int rc;
 	u8 reg;
 	struct qpnp_typec_chip *chip = _chip;
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+	struct typec_device_info *di = &chip->di;
+#endif
 
 	pr_debug("ufp detect triggered\n");
 
 	mutex_lock(&chip->typec_lock);
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+	/*
+	 * exception handling:
+	 * if CC pin is not stable, the state transition may from
+	 * AS DFP to AS UFP direct, VBUS should be turned off first
+	 */
+	if (di->sink_attached) {
+		pr_err("remove Sink first\n");
+		rc = qpnp_typec_handle_detach(chip);
+		if (rc)
+			pr_err("failed to handle DFP detach rc=%d\n", rc);
+		di->reverse_state = 0;
+		di->trysnk_attempt = false;
+		di->sink_attached = false;
+	}
+
+	if (REVERSE_ATTEMPT == di->reverse_state) {
+		pr_info("reversed success, Source and VBUS detected\n");
+		di->reverse_state = REVERSE_COMPLETE;
+	}
+
+	if (di->trysnk_attempt) {
+		pr_info("TrySNK success, Source and VBUS detected\n");
+		typec_wake_unlock(di);
+		di->trysnk_attempt = false;
+		/* cancel watch dog work */
+		cancel_delayed_work(&di->g_wdog_work);
+	}
+
+	/* notify the attached state */
+	complete(&di->reverse_completion);
+#endif
+
 	rc = qpnp_typec_read(chip, &reg, TYPEC_UFP_STATUS_REG(chip->base), 1);
 	if (rc) {
 		pr_err("failed to read status reg rc=%d\n", rc);
@@ -463,14 +943,16 @@ static irqreturn_t ufp_detect_handler(int irq, void *_chip)
 	if (rc)
 		pr_err("failed to set TYPEC MODE on battery psy rc=%d\n", rc);
 
-	if (chip->dr_inst)
-		dual_role_instance_changed(chip->dr_inst);
-
 	pr_debug("UFP status reg = 0x%x current = %dma\n",
 			reg, chip->current_ma);
 
 out:
 	mutex_unlock(&chip->typec_lock);
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+	/* notify userspace the state might have changed */
+	if (di->dual_role)
+		dual_role_instance_changed(di->dual_role);
+#endif
 	return IRQ_HANDLED;
 }
 
@@ -478,24 +960,73 @@ static irqreturn_t ufp_detach_handler(int irq, void *_chip)
 {
 	int rc;
 	struct qpnp_typec_chip *chip = _chip;
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+	struct typec_device_info *di = &chip->di;
+#endif
 
 	pr_debug("ufp detach triggered\n");
 
 	mutex_lock(&chip->typec_lock);
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+	if (di->reverse_state == REVERSE_ATTEMPT) {
+		pr_info("triggered by mode change, ignore\n");
+	} else {
+		di->reverse_state = 0;
+		qpnp_typec_mode_drp(chip);
+		rc = qpnp_typec_handle_detach(chip);
+		if (rc)
+			pr_err("failed to handle UFP detach rc=%d\n", rc);
+
+		/* notify userspace the state might have changed */
+		if (di->dual_role)
+			dual_role_instance_changed(di->dual_role);
+	}
+#else
 	rc = qpnp_typec_handle_detach(chip);
 	if (rc)
 		pr_err("failed to handle UFP detach rc=%d\n", rc);
-
+#endif
 	mutex_unlock(&chip->typec_lock);
 
 	return IRQ_HANDLED;
 }
+
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+static void typec_open_otg(struct qpnp_typec_chip *chip, u8 reg)
+{
+	int rc = 0;
+
+#ifdef CONFIG_SWITCH_FSA9685
+	/*
+	 * ID pin of the switch chip is not used when OTG
+	 * so switch the chip manually
+	 */
+	fsa9685_manual_sw(FSA9685_USB1_ID_TO_IDBYPASS);
+#endif
+
+	rc = qpnp_typec_handle_usb_insertion(chip, reg);
+	if (rc) {
+		pr_err("failed to handle USB insertion rc=%d\n", rc);
+	}
+
+	chip->typec_state = POWER_SUPPLY_TYPE_DFP;
+	chip->type_c_psy.type = POWER_SUPPLY_TYPE_DFP;
+	chip->current_ma = 0;
+	rc = set_property_on_battery(chip, POWER_SUPPLY_PROP_TYPEC_MODE);
+	if (rc)
+		pr_err("failed to set TYPEC MODE on battery psy rc=%d\n", rc);
+
+}
+#endif
 
 static irqreturn_t dfp_detect_handler(int irq, void *_chip)
 {
 	int rc;
 	u8 reg[2];
 	struct qpnp_typec_chip *chip = _chip;
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+	struct typec_device_info *di = &chip->di;
+#endif
 
 	pr_debug("dfp detect trigerred\n");
 
@@ -507,6 +1038,48 @@ static irqreturn_t dfp_detect_handler(int irq, void *_chip)
 	}
 
 	if (reg[1] & VALID_DFP_MASK) {
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+		if (REVERSE_ATTEMPT == di->reverse_state) {
+			pr_info("reversed success, Sink detected\n");
+			di->reverse_state = REVERSE_COMPLETE;
+			di->sink_attached = true;
+			typec_open_otg(chip, reg[0]);
+
+			/* notify the attached state */
+			complete(&di->reverse_completion);
+
+			/* notify userspace the state might have changed */
+			if (di->dual_role)
+				dual_role_instance_changed(di->dual_role);
+		} else if (di->trysnk_attempt) {
+			pr_info("TrySNK fail, Sink detected again\n");
+			di->trysnk_attempt = false;
+			di->sink_attached = true;
+			typec_open_otg(chip, reg[0]);
+
+			/* notify the attached state */
+			complete(&di->reverse_completion);
+
+			/* notify userspace the state might have changed */
+			if (di->dual_role)
+				dual_role_instance_changed(di->dual_role);
+		} else {
+			pr_info("Sink detected, perform TrySNK\n");
+			di->trysnk_attempt = true;
+			qpnp_typec_mode_ufp(chip);
+			typec_wake_lock(di);
+			schedule_delayed_work(&di->g_wdog_work,
+					      msecs_to_jiffies
+					      (TRYSNK_TIMEOUT_MS));
+		}
+#else
+#ifdef CONFIG_SWITCH_FSA9685
+		/*
+		 * ID pin of the switch chip is not used when OTG
+		 * so switch the chip manually
+		 */
+		fsa9685_manual_sw(FSA9685_USB1_ID_TO_IDBYPASS);
+#endif
 		rc = qpnp_typec_handle_usb_insertion(chip, reg[0]);
 		if (rc) {
 			pr_err("failed to handle USB insertion rc=%d\n", rc);
@@ -521,10 +1094,8 @@ static irqreturn_t dfp_detect_handler(int irq, void *_chip)
 		if (rc)
 			pr_err("failed to set TYPEC MODE on battery psy rc=%d\n",
 					rc);
+#endif
 	}
-
-	if (chip->dr_inst)
-		dual_role_instance_changed(chip->dr_inst);
 
 	pr_debug("UFP status reg = 0x%x DFP status reg = 0x%x\n",
 			reg[0], reg[1]);
@@ -538,14 +1109,33 @@ static irqreturn_t dfp_detach_handler(int irq, void *_chip)
 {
 	int rc;
 	struct qpnp_typec_chip *chip = _chip;
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+	struct typec_device_info *di = &chip->di;
+#endif
 
 	pr_debug("dfp detach triggered\n");
 
 	mutex_lock(&chip->typec_lock);
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+	if (di->trysnk_attempt || di->reverse_state == REVERSE_ATTEMPT) {
+		pr_info("triggered by mode change, ignore\n");
+	} else {
+		/* clear flags and set the port mode to DRP when unattached */
+		di->reverse_state = 0;
+		di->sink_attached = false;
+		qpnp_typec_mode_drp(chip);
+		rc = qpnp_typec_handle_detach(chip);
+		if (rc)
+			pr_err("failed to handle DFP detach rc=%d\n", rc);
+
+		if (di->dual_role)
+			dual_role_instance_changed(di->dual_role);
+	}
+#else
 	rc = qpnp_typec_handle_detach(chip);
 	if (rc)
 		pr_err("failed to handle DFP detach rc=%d\n", rc);
-
+#endif
 	mutex_unlock(&chip->typec_lock);
 
 	return IRQ_HANDLED;
@@ -609,6 +1199,14 @@ static int qpnp_typec_determine_initial_status(struct qpnp_typec_chip *chip)
 	int rc;
 	u8 rt_reg;
 
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+	qpnp_typec_mode_drp(chip);
+#endif
+        rc = qpnp_typec_masked_write(chip,TYPEC_INT_EN_CLR(chip->base),VBUS_ERR_CLEAR , VBUS_ERR_CLEAR );
+        if (rc) {
+                pr_err("failed to disable vbus-err interrupt rc=%d\n", rc);
+        }
+
 	rc = qpnp_typec_read(chip, &rt_reg, INT_RT_STS_REG(chip->base), 1);
 	if (rc) {
 		pr_err("failed to read RT status reg rc=%d\n", rc);
@@ -665,8 +1263,8 @@ static int qpnp_typec_request_irqs(struct qpnp_typec_chip *chip)
 			flags, true, rc);
 	REQUEST_IRQ(chip, chip->dfp_detect, "dfp-detect", dfp_detect_handler,
 			flags, true, rc);
-	REQUEST_IRQ(chip, chip->vbus_err, "vbus-err", vbus_err_handler,
-			flags, true, rc);
+        //REQUEST_IRQ(chip, chip->vbus_err, "vbus-err", vbus_err_handler,
+	//		flags, true, rc);
 	REQUEST_IRQ(chip, chip->vconn_oc, "vconn-oc", vconn_oc_handler,
 			flags, true, rc);
 
@@ -742,8 +1340,6 @@ static void qpnp_typec_role_check_work(struct work_struct *work)
 enum dual_role_property qpnp_typec_dr_properties[] = {
 	DUAL_ROLE_PROP_SUPPORTED_MODES,
 	DUAL_ROLE_PROP_MODE,
-	DUAL_ROLE_PROP_PR,
-	DUAL_ROLE_PROP_DR,
 };
 
 static int qpnp_typec_dr_is_writeable(struct dual_role_phy_instance *dual_role,
@@ -827,40 +1423,19 @@ static int qpnp_typec_dr_get_property(struct dual_role_phy_instance *dual_role,
 					unsigned int *val)
 {
 	struct qpnp_typec_chip *chip = dual_role_get_drvdata(dual_role);
-	unsigned int mode, power_role, data_role;
 
 	if (!chip)
 		return -EINVAL;
-
-	switch (chip->typec_state) {
-	case POWER_SUPPLY_TYPE_UFP:
-		mode = DUAL_ROLE_PROP_MODE_UFP;
-		power_role = DUAL_ROLE_PROP_PR_SNK;
-		data_role = DUAL_ROLE_PROP_DR_DEVICE;
-		break;
-	case POWER_SUPPLY_TYPE_DFP:
-		mode = DUAL_ROLE_PROP_MODE_DFP;
-		power_role = DUAL_ROLE_PROP_PR_SRC;
-		data_role = DUAL_ROLE_PROP_DR_HOST;
-		break;
-	default:
-		mode = DUAL_ROLE_PROP_MODE_NONE;
-		power_role = DUAL_ROLE_PROP_PR_NONE;
-		data_role = DUAL_ROLE_PROP_DR_NONE;
-	};
 
 	switch (prop) {
 	case DUAL_ROLE_PROP_SUPPORTED_MODES:
 		*val = chip->dr_desc.supported_modes;
 		break;
 	case DUAL_ROLE_PROP_MODE:
-		*val = mode;
-		break;
-	case DUAL_ROLE_PROP_PR:
-		*val = power_role;
-		break;
-	case DUAL_ROLE_PROP_DR:
-		*val = data_role;
+		*val = (chip->typec_state == POWER_SUPPLY_TYPE_UFP)
+			? DUAL_ROLE_PROP_MODE_UFP
+			: (chip->typec_state == POWER_SUPPLY_TYPE_DFP)
+			? DUAL_ROLE_PROP_MODE_DFP : DUAL_ROLE_PROP_MODE_NONE;
 		break;
 	default:
 		return -EINVAL;
@@ -874,6 +1449,11 @@ static int qpnp_typec_probe(struct spmi_device *spmi)
 	int rc;
 	struct resource *resource;
 	struct qpnp_typec_chip *chip;
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+	struct typec_device_info *di = NULL;
+	struct dual_role_phy_desc *desc = NULL;
+	struct dual_role_phy_instance *dual_role = NULL;
+#endif
 
 	resource = spmi_get_resource(spmi, NULL, IORESOURCE_MEM, 0);
 	if (!resource) {
@@ -901,6 +1481,34 @@ static int qpnp_typec_probe(struct spmi_device *spmi)
 	device_init_wakeup(&spmi->dev, 1);
 	mutex_init(&chip->typec_lock);
 	spin_lock_init(&chip->rw_lock);
+
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+	di = &chip->di;
+	INIT_DELAYED_WORK(&di->g_wdog_work, typec_wdog_work);
+	init_completion(&di->reverse_completion);
+
+	desc =
+	    devm_kzalloc(&spmi->dev,
+			 sizeof(struct dual_role_phy_desc), GFP_KERNEL);
+	if (!desc) {
+		pr_err("unable to allocate dual role descriptor\n");
+		return -ENOMEM;
+	}
+
+	wake_lock_init(&di->wake_lock, WAKE_LOCK_SUSPEND, "typec_wake_lock");
+
+	desc->name = "otg_default";
+	desc->supported_modes = DUAL_ROLE_SUPPORTED_MODES_DFP_AND_UFP;
+	desc->get_property = dual_role_get_local_prop;
+	desc->set_property = dual_role_set_prop;
+	desc->properties = fusb_drp_properties;
+	desc->num_properties = ARRAY_SIZE(fusb_drp_properties);
+	desc->property_is_writeable = dual_role_is_writeable;
+	dual_role = devm_dual_role_instance_register(&spmi->dev, desc);
+	dual_role->drv_data = di;
+	di->dual_role = dual_role;
+	di->desc = desc;
+#endif
 
 	/* determine initial status */
 	rc = qpnp_typec_determine_initial_status(chip);
@@ -955,7 +1563,17 @@ static int qpnp_typec_probe(struct spmi_device *spmi)
 		pr_err("failed to request irqs rc=%d\n", rc);
 		goto unregister_psy;
 	}
+#ifdef CONFIG_HUAWEI_TYPEC
+	rc = typec_chip_register(&qpnp_typec_ops);
+	if (rc) {
+		pr_err("failed to register typec chip\n");
+	}
+	g_chip = chip;
+	qpnp_create_sysfs();
 
+	/*set Rp connect threshold to 0.6V */
+	qpnp_typec_otg_threshold(chip, THRESHOLD_0P6);
+#endif
 	pr_info("TypeC successfully probed state=%d CC-line-state=%d\n",
 			chip->typec_state, chip->cc_line_state);
 	return 0;
@@ -988,6 +1606,15 @@ static int qpnp_typec_remove(struct spmi_device *spmi)
 	return 0;
 }
 
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+static void qpnp_typec_shutdown(struct spmi_device *spmi)
+{
+	struct qpnp_typec_chip *chip = dev_get_drvdata(&spmi->dev);
+
+	qpnp_typec_mode_drp(chip);
+}
+#endif
+
 static struct of_device_id qpnp_typec_match_table[] = {
 	{ .compatible = QPNP_TYPEC_DEV_NAME, },
 	{}
@@ -996,6 +1623,9 @@ static struct of_device_id qpnp_typec_match_table[] = {
 static struct spmi_driver qpnp_typec_driver = {
 	.probe		= qpnp_typec_probe,
 	.remove		= qpnp_typec_remove,
+#ifdef CONFIG_DUAL_ROLE_USB_INTF
+	.shutdown	= qpnp_typec_shutdown,
+#endif
 	.driver		= {
 		.name		= QPNP_TYPEC_DEV_NAME,
 		.owner		= THIS_MODULE,

@@ -114,8 +114,7 @@ static ssize_t power_supply_show_property(struct device *dev,
 		return sprintf(buf, "%s\n", technology_text[value.intval]);
 	else if (off == POWER_SUPPLY_PROP_CAPACITY_LEVEL)
 		return sprintf(buf, "%s\n", capacity_level_text[value.intval]);
-	else if (off == POWER_SUPPLY_PROP_TYPE ||
-			off == POWER_SUPPLY_PROP_REAL_TYPE)
+	else if (off == POWER_SUPPLY_PROP_TYPE)
 		return sprintf(buf, "%s\n", type_text[value.intval]);
 	else if (off == POWER_SUPPLY_PROP_SCOPE)
 		return sprintf(buf, "%s\n", scope_text[value.intval]);
@@ -278,6 +277,12 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(restricted_charging),
 	POWER_SUPPLY_ATTR(current_capability),
 	POWER_SUPPLY_ATTR(typec_mode),
+	POWER_SUPPLY_ATTR(profile_status),
+	POWER_SUPPLY_ATTR(release_wakelock),
+	POWER_SUPPLY_ATTR(in_thermal),
+	POWER_SUPPLY_ATTR(charger_ovp),
+	POWER_SUPPLY_ATTR(register_head),
+	POWER_SUPPLY_ATTR(dump_register),
 	POWER_SUPPLY_ATTR(allow_hvdcp3),
 	POWER_SUPPLY_ATTR(max_pulse_allowed),
 	POWER_SUPPLY_ATTR(enable_aicl),
@@ -306,7 +311,11 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(die_health),
 	POWER_SUPPLY_ATTR(connector_health),
 	POWER_SUPPLY_ATTR(hw_current_max),
-	POWER_SUPPLY_ATTR(real_type),
+	POWER_SUPPLY_ATTR(allow_hvdcp),
+	POWER_SUPPLY_ATTR(hiz_mode),
+	POWER_SUPPLY_ATTR(chg_cycle_count),
+	POWER_SUPPLY_ATTR(reset_learned_cc),
+	POWER_SUPPLY_ATTR(cc_cv),
 	/* Local extensions of type int64_t */
 	POWER_SUPPLY_ATTR(charge_counter_ext),
 	/* Properties of type `const char *' */
