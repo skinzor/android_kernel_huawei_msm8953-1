@@ -27,6 +27,7 @@
 #include <linux/syscore_ops.h>
 #include <linux/irqchip/qpnp-int.h>
 #include "spmi-dbgfs.h"
+#include <linux/power/huawei_dsm_charger.h>
 
 #define SPMI_PMIC_ARB_NAME		"spmi_pmic_arb"
 
@@ -924,6 +925,7 @@ __pmic_arb_periph_irq(int irq, void *dev_id, bool show)
 	u8 ee = pmic_arb->ee;
 	u32 ret = IRQ_NONE;
 	u32 status;
+	static u32 irq_none_cnt;
 
 	int first = pmic_arb->min_intr_apid >> 5;
 	int last = pmic_arb->max_intr_apid >> 5;
@@ -975,6 +977,16 @@ __pmic_arb_periph_irq(int irq, void *dev_id, bool show)
 		}
 	}
 
+	if (IRQ_NONE == ret && !show) {
+		irq_none_cnt++;
+		/* for irq_none, report dmd abnormal irq issue every 99900 */
+		if (irq_none_cnt >= 99900) {
+			dsm_post_chg_bms_info(DSM_CHG_SPMI_INT_ERR,
+						"spmi irq none storm\n");
+			irq_none_cnt = 0;
+		}
+		irq_none_cnt++;
+	}
 	return ret;
 }
 
