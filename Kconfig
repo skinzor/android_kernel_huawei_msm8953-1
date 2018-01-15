@@ -8,4 +8,10 @@ config SRCARCH
 	string
 	option env="SRCARCH"
 
+config WIFI_WAKE_SRC
+	bool "enable print wifi wakeup src in sleep mode"
+	depends on HUAWEI_KERNEL
+	default n
+	help
+	  Enable print wifi wakeup src in sleep mode.
 source "arch/$SRCARCH/Kconfig"

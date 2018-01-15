@@ -382,6 +382,15 @@ CFLAGS_KERNEL	=
 AFLAGS_KERNEL	=
 CFLAGS_GCOV	= -fprofile-arcs -ftest-coverage
 
+# Define macro to control the high low temperature compile
+ifeq ($(HLTHERM_RUNTEST),true)
+	CFLAGS_KERNEL += -DCONFIG_HLTHERM_RUNTEST
+endif
+
+# Define macro to control nolog version
+ifeq ($(FINAL_RELEASE),true)
+    CFLAGS_KERNEL += -DCONFIG_FINAL_RELEASE
+endif
 
 # Use USERINCLUDE when you must reference the UAPI directories only.
 USERINCLUDE    := \
