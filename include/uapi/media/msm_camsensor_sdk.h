@@ -20,6 +20,7 @@
 #define CSI_DECODE_12BIT        3
 #define CSI_DECODE_DPCM_10_6_10 4
 #define CSI_DECODE_DPCM_10_8_10 5
+#define CSI_DECODE_DPCM_10_6_10 4
 #define MAX_CID                 16
 #define I2C_SEQ_REG_DATA_MAX    1024
 #define I2C_REG_DATA_MAX       (8*1024)
@@ -95,6 +96,7 @@ enum msm_camera_i2c_data_type {
 	MSM_CAMERA_I2C_SET_WORD_MASK,
 	MSM_CAMERA_I2C_UNSET_WORD_MASK,
 	MSM_CAMERA_I2C_SET_BYTE_WRITE_MASK_DATA,
+	MSM_CAMERA_I2C_SEQ,
 	MSM_CAMERA_I2C_DATA_TYPE_MAX,
 };
 
@@ -111,6 +113,8 @@ enum msm_sensor_power_seq_gpio_t {
 	SENSOR_GPIO_FL_RESET,
 	SENSOR_GPIO_CUSTOM1,
 	SENSOR_GPIO_CUSTOM2,
+	SENSOR_GPIO_CAM_ID,
+	SENSOR_GPIO_FLASH_WP,
 	SENSOR_GPIO_MAX,
 };
 
@@ -254,6 +258,16 @@ struct msm_sensor_id_info_t {
 	unsigned short sensor_id_mask;
 };
 
+struct cam_id_info_t{
+  uint16_t cam_expected_id;
+  uint16_t cam_vendor_id;
+  uint32_t cam_vendor_offset;
+  uint16_t cam_module_version_support;
+  uint32_t cam_module_version_start;
+  uint32_t cam_module_version_end;
+  uint32_t cam_module_version_offset;
+};
+
 struct msm_camera_sensor_slave_info {
 	char sensor_name[32];
 	char eeprom_name[32];
@@ -269,6 +283,7 @@ struct msm_camera_sensor_slave_info {
 	unsigned char  is_init_params_valid;
 	struct msm_sensor_init_params sensor_init_params;
 	enum msm_sensor_output_format_t output_format;
+	struct cam_id_info_t *cam_id_info;
 };
 
 struct msm_camera_i2c_reg_array {

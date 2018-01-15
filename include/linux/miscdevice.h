@@ -19,6 +19,11 @@
 #define APOLLO_MOUSE_MINOR	7	/* unused */
 #define PC110PAD_MINOR		9	/* unused */
 /*#define ADB_MOUSE_MINOR	10	FIXME OBSOLETE */
+#define LOG_EXC_MINOR		100	/* hwlog exception */
+#define LOG_JAN_MINOR		101	/* hwlog jank */
+#define LOG_TAG_MINOR		102	/* hwlog tag */
+#define RESET_DETECT_MINOR	103	/* huawei reset detect*/
+#define NFC_MINOR		104	/* NFC */
 #define WATCHDOG_MINOR		130	/* Watchdog timer     */
 #define TEMP_MINOR		131	/* Temperature Sensor */
 #define RTC_MINOR		135
@@ -49,6 +54,9 @@
 #define LOOP_CTRL_MINOR		237
 #define VHOST_NET_MINOR		238
 #define UHID_MINOR		239
+#ifndef DSM_MINOR
+#define DSM_MINOR		254    /* DSM */
+#endif
 #define MISC_DYNAMIC_MINOR	255
 
 struct device;
