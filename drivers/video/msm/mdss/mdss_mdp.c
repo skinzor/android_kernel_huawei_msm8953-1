@@ -58,6 +58,10 @@
 
 #include "mdss_mdp_trace.h"
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+#include <linux/hw_lcd_common.h>
+#endif
+
 #define AXI_HALT_TIMEOUT_US	0x4000
 #define AUTOSUSPEND_TIMEOUT_MS	200
 #define DEFAULT_MDP_PIPE_WIDTH	2048
@@ -1488,6 +1492,10 @@ void mdss_mdp_clk_ctrl(int enable)
 				changed++;
 		} else {
 			pr_err("Can not be turned off\n");
+#ifdef CONFIG_HUAWEI_DSM
+			/* report mdp clk dsm error */
+			lcd_report_dsm_err(DSM_LCD_MDSS_MDP_CLK_ERROR_NO,0,0);
+#endif
 		}
 	}
 
@@ -1594,7 +1602,12 @@ static int mdss_mdp_gdsc_notifier_call(struct notifier_block *self,
 
 	mdata = container_of(self, struct mdss_data_type, gdsc_cb);
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	if (!mdss_mdp_req_init_restore_cfg(mdata) &&
+		(event & REGULATOR_EVENT_ENABLE)) {
+#else
 	if (event & REGULATOR_EVENT_ENABLE) {
+#endif
 		__mdss_restore_sec_cfg(mdata);
 	} else if (event & REGULATOR_EVENT_PRE_DISABLE) {
 		pr_debug("mdss gdsc is getting disabled\n");
@@ -1779,15 +1792,20 @@ static void mdss_mdp_hw_rev_caps_init(struct mdss_data_type *mdata)
 		mdata->per_pipe_ib_factor.denom = 5;
 		mdata->apply_post_scale_bytes = false;
 		mdata->hflip_buffer_reused = false;
-		mdata->min_prefill_lines = 21;
+		mdata->min_prefill_lines = 25;
 		mdata->has_ubwc = true;
 		mdata->pixel_ram_size = 50 * 1024;
+		mdata->rects_per_sspp[MDSS_MDP_PIPE_TYPE_DMA] = 2;
+
 		set_bit(MDSS_QOS_PER_PIPE_IB, mdata->mdss_qos_map);
+		set_bit(MDSS_QOS_TS_PREFILL, mdata->mdss_qos_map);
 		set_bit(MDSS_QOS_OVERHEAD_FACTOR, mdata->mdss_qos_map);
 		set_bit(MDSS_QOS_CDP, mdata->mdss_qos_map);
 		set_bit(MDSS_QOS_OTLIM, mdata->mdss_qos_map);
 		set_bit(MDSS_QOS_PER_PIPE_LUT, mdata->mdss_qos_map);
 		set_bit(MDSS_QOS_SIMPLIFIED_PREFILL, mdata->mdss_qos_map);
+		set_bit(MDSS_QOS_TS_PREFILL, mdata->mdss_qos_map);
+		set_bit(MDSS_QOS_IB_NOCR, mdata->mdss_qos_map);
 		set_bit(MDSS_CAPS_YUV_CONFIG, mdata->mdss_caps_map);
 		set_bit(MDSS_CAPS_SCM_RESTORE_NOT_REQUIRED,
 			mdata->mdss_caps_map);

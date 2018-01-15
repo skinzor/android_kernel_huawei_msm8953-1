@@ -33,14 +33,35 @@
 #include <linux/efi.h>
 #include <linux/fb.h>
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+#include <huawei_platform/touchscreen/hw_tp_common.h>
+#endif
+
 #include <asm/fb.h>
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+extern int lcd_debug_mask ;
+extern int tp_reset_enable;
+#define LCD_INFO 2
+
+#ifndef LCD_LOG_INFO
+#define LCD_LOG_INFO( x...)			\
+do{			\
+	if( lcd_debug_mask >= LCD_INFO )			\
+	{			\
+		printk(KERN_ERR "[LCD_INFO] " x);			\
+	}			\
+			\
+}while(0)
+#endif
+#endif
 
     /*
      *  Frame buffer device initialization and setup routines
      */
 
 #define FBPIXMAPSIZE	(1024 * 8)
+
 
 static DEFINE_MUTEX(registration_lock);
 
@@ -1054,9 +1075,14 @@ EXPORT_SYMBOL(fb_set_var);
 
 int
 fb_blank(struct fb_info *info, int blank)
-{	
+{
 	struct fb_event event;
 	int ret = -EINVAL, early_ret;
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	bool touch_pre_lcd = 0;
+	unsigned long timeout ;
+	LCD_LOG_INFO("Enter %s, blank_mode = [%d].\n",__func__,blank);
+#endif
 
  	if (blank > FB_BLANK_POWERDOWN)
  		blank = FB_BLANK_POWERDOWN;
@@ -1065,12 +1091,30 @@ fb_blank(struct fb_info *info, int blank)
 	event.data = &blank;
 
 	early_ret = fb_notifier_call_chain(FB_EARLY_EVENT_BLANK, &event);
-
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	touch_pre_lcd = get_tp_pre_lcd_flag();
+	if(touch_pre_lcd&& blank == FB_BLANK_UNBLANK)
+	{
+		fb_notifier_call_chain(FB_EVENT_BLANK, &event);
+		LCD_LOG_INFO("%s:when power on wake tp pre lcd.\n",__func__);
+	}
+	timeout = jiffies ;
+#endif
 	if (info->fbops->fb_blank)
  		ret = info->fbops->fb_blank(blank, info);
-
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	LCD_LOG_INFO("%s: fb blank time = %u\n",
+			__func__,jiffies_to_msecs(jiffies-timeout));
+#endif
 	if (!ret)
-		fb_notifier_call_chain(FB_EVENT_BLANK, &event);
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	{
+				if (!touch_pre_lcd||blank != FB_BLANK_UNBLANK)
+#endif
+					fb_notifier_call_chain(FB_EVENT_BLANK, &event);
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	}
+#endif
 	else {
 		/*
 		 * if fb_blank is failed then revert effects of
@@ -1079,6 +1123,9 @@ fb_blank(struct fb_info *info, int blank)
 		if (!early_ret)
 			fb_notifier_call_chain(FB_R_EARLY_EVENT_BLANK, &event);
 	}
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	LCD_LOG_INFO("Exit %s, blank_mode = [%d].\n",__func__,blank);
+#endif
 
  	return ret;
 }

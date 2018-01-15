@@ -34,6 +34,12 @@
 #include "mdss_dsi_phy.h"
 #include "mdss_dba_utils.h"
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+#include <linux/hw_lcd_common.h>
+bool enable_PT_test = 0;
+module_param_named(enable_PT_test, enable_PT_test, bool, S_IRUGO | S_IWUSR);
+#endif
+
 #define XO_CLK_RATE	19200000
 #define CMDLINE_DSI_CTL_NUM_STRING_LEN 2
 
@@ -43,7 +49,13 @@ static struct mdss_dsi_data *mdss_dsi_res;
 #define DSI_DISABLE_PC_LATENCY 100
 #define DSI_ENABLE_PC_LATENCY PM_QOS_DEFAULT_VALUE
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+struct mdss_panel_data *global_pdata = NULL;
+#endif
+
 static struct pm_qos_request mdss_dsi_pm_qos_request;
+
+extern ssize_t Is_lm36923_used(void);
 
 static void mdss_dsi_pm_qos_add_request(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
@@ -1298,6 +1310,10 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
 	int cur_power_state;
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	unsigned long timeout = jiffies;
+#endif
+
 	if (pdata == NULL) {
 		pr_err("%s: Invalid input data\n", __func__);
 		return -EINVAL;
@@ -1371,6 +1387,11 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 	mdss_dsi_clk_ctrl(ctrl_pdata, ctrl_pdata->dsi_clk_handle,
 			  MDSS_DSI_LINK_CLK, MDSS_DSI_CLK_ON);
 	mdss_dsi_sw_reset(ctrl_pdata, true);
+
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	LCD_LOG_INFO("%s: dsi_on_time = %u\n",
+			__func__,jiffies_to_msecs(jiffies-timeout));
+#endif
 
 	/*
 	 * Issue hardware reset line after enabling the DSI clocks and data
@@ -3031,6 +3052,13 @@ static int mdss_dsi_ctrl_probe(struct platform_device *pdev)
 	struct device_node *dsi_pan_node = NULL;
 	const char *ctrl_name;
 	struct mdss_util_intf *util;
+#ifdef CONFIG_HUAWEI_DSM
+	struct dsm_dev dsm_lcd = {
+		.name = "dsm_lcd",
+		.fops = NULL,
+		.buff_size = 1024,
+	};
+#endif
 
 	if (!pdev || !pdev->dev.of_node) {
 		pr_err("%s: pdev not found for DSI controller\n", __func__);
@@ -3118,6 +3146,12 @@ static int mdss_dsi_ctrl_probe(struct platform_device *pdev)
 		pr_err("%s: dsi panel dev reg failed\n", __func__);
 		goto error_pan_node;
 	}
+
+#ifdef CONFIG_HUAWEI_DSM
+	if (!lcd_dclient) {
+		lcd_dclient = dsm_register_client(&dsm_lcd);
+	}
+#endif
 
 	pinfo = &(ctrl_pdata->panel_data.panel_info);
 	if (!(mdss_dsi_is_hw_config_split(ctrl_pdata->shared_data) &&
@@ -3973,6 +4007,10 @@ int dsi_panel_device_register(struct platform_device *ctrl_pdev,
 	u64 clk_rate;
 
 	mipi  = &(pinfo->mipi);
+
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	global_pdata = &(ctrl_pdata->panel_data);
+#endif
 
 	pinfo->type =
 		((mipi->mode == DSI_VIDEO_MODE)

@@ -28,6 +28,10 @@
 #include "mdss_fb.h"
 #include "mdss_mdp_cdm.h"
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+void mdss_dsi_status_check_ctl(struct msm_fb_data_type *mfd, int sheduled);
+#endif
+
 #define MDSS_MDP_DEFAULT_INTR_MASK 0
 
 #define PHASE_STEP_SHIFT	21
