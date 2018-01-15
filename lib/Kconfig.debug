@@ -477,7 +477,8 @@ config SLUB_STATS
 	  Try running: slabinfo -DA
 
 config HAVE_DEBUG_KMEMLEAK
-	bool
+	bool "kernel memory leak debug"
+	default y
 
 config DEBUG_KMEMLEAK
 	bool "Kernel memory leak detector"
@@ -1030,6 +1031,7 @@ config DEBUG_LOCK_ALLOC
 	select DEBUG_SPINLOCK
 	select DEBUG_MUTEXES
 	select LOCKDEP
+	default n
 	help
 	 This feature will check whether any held lock (spinlock, rwlock,
 	 mutex or rwsem) is incorrectly freed by the kernel, via any of the
@@ -1088,6 +1090,7 @@ config LOCKDEP
 	select FRAME_POINTER if !MIPS && !PPC && !ARM_UNWIND && !S390 && !MICROBLAZE && !ARC && !SCORE
 	select KALLSYMS
 	select KALLSYMS_ALL
+	default n
 
 config LOCK_STAT
 	bool "Lock usage statistics"
@@ -1203,7 +1206,7 @@ config HAVE_DEBUG_BUGVERBOSE
 config DEBUG_BUGVERBOSE
 	bool "Verbose BUG() reporting (adds 70K)" if DEBUG_KERNEL && EXPERT
 	depends on BUG && (GENERIC_BUG || HAVE_DEBUG_BUGVERBOSE)
-	default y
+	default y if DEBUG_KERNEL && EXPERT
 	help
 	  Say Y here to make BUG() panics output the file name and line number
 	  of the BUG call as well as the EIP and oops trace.  This aids
