@@ -25,12 +25,14 @@
 #include <sound/pcm.h>
 #include <sound/jack.h>
 #include <sound/q6afe-v2.h>
+#include <sound/q6core.h>
 #include <soc/qcom/socinfo.h>
 #include "qdsp6v2/msm-pcm-routing-v2.h"
 #include "msm-audio-pinctrl.h"
 #include "../codecs/msm8x16-wcd.h"
 #include "../codecs/wsa881x-analog.h"
 #include <linux/regulator/consumer.h>
+#include <sound/hw_audio_info.h>
 #define DRV_NAME "msm8952-asoc-wcd"
 
 #define BTSCO_RATE_8KHZ 8000
@@ -154,7 +156,8 @@ static struct afe_clk_set mi2s_rx_clk = {
 static struct afe_clk_set wsa_ana_clk = {
 	AFE_API_VERSION_I2S_CONFIG,
 	Q6AFE_LPASS_CLK_ID_MCLK_1,
-	Q6AFE_LPASS_OSR_CLK_9_P600_MHZ,
+	//Q6AFE_LPASS_OSR_CLK_9_P600_MHZ,
+	Q6AFE_LPASS_OSR_CLK_12_P288_MHZ,
 	Q6AFE_LPASS_CLK_ATTRIBUTE_COUPLE_NO,
 	Q6AFE_LPASS_CLK_ROOT_DEFAULT,
 	0,
@@ -395,7 +398,7 @@ static int msm_tx_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 	return 0;
 }
 
-static int msm_senary_tx_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+static __maybe_unused int msm_senary_tx_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 				struct snd_pcm_hw_params *params)
 {
 	struct snd_interval *rate = hw_param_interval(params,
@@ -550,7 +553,7 @@ static bool is_mi2s_rx_port(int port_id)
 
 static uint32_t get_mi2s_rx_clk_val(int port_id)
 {
-	uint32_t clk_val = 0;
+	uint32_t clk_val;
 
 	/*
 	 *  Derive clock value based on sample rate, bits per sample and
@@ -1167,6 +1170,11 @@ static int msm_mi2s_snd_startup(struct snd_pcm_substream *substream)
 	pr_debug("%s(): substream = %s  stream = %d\n", __func__,
 		 substream->name, substream->stream);
 
+	if (!q6core_is_adsp_ready()) {
+		pr_err("%s(): adsp not ready\n", __func__);
+		return -EINVAL;
+	}
+
 	/*
 	 * configure the slave select to
 	 * invalid state for internal codec
@@ -1257,6 +1265,11 @@ static int msm_prim_auxpcm_startup(struct snd_pcm_substream *substream)
 	pr_debug("%s(): substream = %s\n",
 			__func__, substream->name);
 
+	if (!q6core_is_adsp_ready()) {
+		pr_err("%s(): adsp not ready\n", __func__);
+		return -EINVAL;
+	}
+
 	/* mux config to route the AUX MI2S */
 	if (pdata->vaddr_gpio_mux_mic_ctl) {
 		val = ioread32(pdata->vaddr_gpio_mux_mic_ctl);
@@ -1323,6 +1336,12 @@ static int msm_sec_mi2s_snd_startup(struct snd_pcm_substream *substream)
 					__func__);
 		return 0;
 	}
+
+	if (!q6core_is_adsp_ready()) {
+		pr_err("%s(): adsp not ready\n", __func__);
+		return -EINVAL;
+	}
+
 	if ((pdata->ext_pa & SEC_MI2S_ID) == SEC_MI2S_ID) {
 		if (pdata->vaddr_gpio_mux_spkr_ctl) {
 			val = ioread32(pdata->vaddr_gpio_mux_spkr_ctl);
@@ -1396,6 +1415,12 @@ static int msm_quat_mi2s_snd_startup(struct snd_pcm_substream *substream)
 
 	pr_debug("%s(): substream = %s  stream = %d\n", __func__,
 				substream->name, substream->stream);
+
+	if (!q6core_is_adsp_ready()) {
+		pr_err("%s(): adsp not ready\n", __func__);
+		return -EINVAL;
+	}
+
 	if (pdata->vaddr_gpio_mux_mic_ctl) {
 		val = ioread32(pdata->vaddr_gpio_mux_mic_ctl);
 		val = val | 0x02020002;
@@ -1451,9 +1476,18 @@ static int msm_quin_mi2s_snd_startup(struct snd_pcm_substream *substream)
 	struct msm8916_asoc_mach_data *pdata =
 			snd_soc_card_get_drvdata(card);
 	int ret = 0, val = 0;
+#ifdef CONFIG_SND_SOC_MAX98925
+	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+#endif
 
 	pr_debug("%s(): substream = %s  stream = %d\n", __func__,
 				substream->name, substream->stream);
+
+	if (!q6core_is_adsp_ready()) {
+		pr_err("%s(): adsp not ready\n", __func__);
+		return -EINVAL;
+	}
+
 	if (pdata->vaddr_gpio_mux_quin_ctl) {
 		val = ioread32(pdata->vaddr_gpio_mux_quin_ctl);
 		val = val | 0x00000001;
@@ -1475,6 +1509,12 @@ static int msm_quin_mi2s_snd_startup(struct snd_pcm_substream *substream)
 		ret = snd_soc_dai_set_fmt(cpu_dai, SND_SOC_DAIFMT_CBS_CFS);
 		if (ret < 0)
 			pr_err("%s: set fmt cpu dai failed\n", __func__);
+#ifdef CONFIG_SND_SOC_MAX98925
+		/* This function will set fmt to smartpa codec */
+		ret = snd_soc_dai_set_fmt(codec_dai, SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_CBS_CFS);
+		if (ret < 0)
+			pr_err("%s: set fmt codec dai failed, err:%d\n", __func__, ret);
+#endif
 	}
 	return ret;
 err:
@@ -1515,7 +1555,7 @@ static void *def_msm8952_wcd_mbhc_cal(void)
 		return NULL;
 
 #define S(X, Y) ((WCD_MBHC_CAL_PLUG_TYPE_PTR(msm8952_wcd_cal)->X) = (Y))
-	S(v_hs_max, 1500);
+	S(v_hs_max, 1700);
 #undef S
 #define S(X, Y) ((WCD_MBHC_CAL_BTN_DET_PTR(msm8952_wcd_cal)->X) = (Y))
 	S(num_btn, WCD_MBHC_DEF_BUTTONS);
@@ -1538,16 +1578,17 @@ static void *def_msm8952_wcd_mbhc_cal(void)
 	 * 210-290 == Button 2
 	 * 360-680 == Button 3
 	 */
-	btn_low[0] = 75;
-	btn_high[0] = 75;
-	btn_low[1] = 150;
-	btn_high[1] = 150;
-	btn_low[2] = 225;
-	btn_high[2] = 225;
-	btn_low[3] = 450;
-	btn_high[3] = 450;
-	btn_low[4] = 500;
-	btn_high[4] = 500;
+	btn_low[0] = 87;
+	btn_high[0] = 87;
+	btn_low[1] = 120;
+	btn_high[1] = 120;
+	btn_low[2] = 210;
+	btn_high[2] = 215;
+	btn_low[3] = 375;
+	btn_high[3] = 400;
+	/*do not support button 4, so modify value*/
+	btn_low[4] = 410;
+	btn_high[4] = 410;
 
 	return msm8952_wcd_cal;
 }
@@ -2890,6 +2931,152 @@ static struct snd_soc_card *msm8952_populate_sndcard_dailinks(
 	return card;
 }
 
+#ifdef CONFIG_SND_SOC_MAX98925
+static uint8_t i2c_info[] = "max98925.8-0031";
+extern bool get_max_smartpa_drv_state(void);
+extern void get_max_smartpa_i2c_node(uint8_t *info);
+
+static struct snd_soc_dai_link max98925_dai_link[] = {
+	{
+		.name = LPASS_BE_QUIN_MI2S_TX,
+		.stream_name = "Quinary MI2S Capture",
+		.cpu_dai_name = "msm-dai-q6-mi2s.5",
+		.platform_name = "msm-pcm-routing",
+		.codec_dai_name = "max98925-aif1",
+		.codec_name = i2c_info,
+		.no_pcm = 1,
+		.dpcm_capture = 1,
+		.be_id = MSM_BACKEND_DAI_QUINARY_MI2S_TX,
+		.be_hw_params_fixup = msm_be_hw_params_fixup,
+		.ops = &msm8952_quin_mi2s_be_ops,
+		.ignore_suspend = 1,
+	},
+	{
+		.name = LPASS_BE_QUIN_MI2S_RX,
+		.stream_name = "Quinary MI2S Playback",
+		.cpu_dai_name = "msm-dai-q6-mi2s.5",
+		.platform_name = "msm-pcm-routing",
+		.codec_dai_name = "max98925-aif1",
+		.codec_name = i2c_info,
+		.no_pcm = 1,
+		.dpcm_playback = 1,
+		.be_id = MSM_BACKEND_DAI_QUINARY_MI2S_RX,
+		.be_hw_params_fixup = msm_be_hw_params_fixup,
+		.ops = &msm8952_quin_mi2s_be_ops,
+		.ignore_pmdown_time = 1, /* dai link has playback support */
+		.ignore_suspend = 1,
+	},
+	{ /* hw:x,26 */
+		.name = "QUIN_MI2S_TX Hostless",
+		.stream_name = "Quinary MI2S_TX Hostless Capture",
+		.cpu_dai_name = "QUIN_MI2S_TX_HOSTLESS",
+		.platform_name = "msm-pcm-hostless",
+		.dynamic = 1,
+		.dpcm_capture = 1,
+		.trigger = {SND_SOC_DPCM_TRIGGER_POST,
+			SND_SOC_DPCM_TRIGGER_POST},
+		.no_host_mode = SND_SOC_DAI_LINK_NO_HOST,
+		.ignore_suspend = 1,
+		.ignore_pmdown_time = 1,
+		.codec_dai_name = "snd-soc-dummy-dai",
+		.codec_name = "snd-soc-dummy",
+		.be_id = 0,
+	},
+};
+#endif
+
+#ifdef CONFIG_SND_SOC_TFA98XX
+extern bool get_nxp_smartpa_drv_state(void);
+static struct snd_soc_dai_link msm8952_tfa9895_dai_link[] = {
+	{
+		.name = LPASS_BE_QUIN_MI2S_RX,
+		.stream_name = "Quinary MI2S Playback",
+		.cpu_dai_name = "msm-dai-q6-mi2s.5",
+		.platform_name = "msm-pcm-routing",
+		.codec_name = "tfa98xx.8-0034",
+		.codec_dai_name = "tfa98xx-aif-8-34",
+		.no_pcm = 1,
+		.dpcm_playback = 1,
+		.be_id = MSM_BACKEND_DAI_QUINARY_MI2S_RX,
+		.be_hw_params_fixup = msm_be_hw_params_fixup,
+		.ops = &msm8952_quin_mi2s_be_ops,
+		.ignore_pmdown_time = 1, /* dai link has playback support */
+		.ignore_suspend = 1,
+	},
+};
+#endif
+
+#if (defined CONFIG_SND_SOC_MAX98925) || (defined CONFIG_SND_SOC_TFA98XX)
+
+void check_dai_link_for_smartpa(struct snd_soc_dai_link *dailink, int daicount, 
+								struct snd_soc_dai_link *pa_link, int pa_daicount)
+{
+	int i = 0;
+	int j = 0;
+	int len = 0;
+	int beid_val = 0;
+	int smart_dai_count = 0;
+	bool nxp_smartpa_started = true;
+	bool maxim_smartpa_started = true;
+	struct snd_soc_dai_link *smartpa_dai = NULL;
+
+	if (NULL == dailink) {
+		pr_err("%s: input null dai params \n", __func__);
+		return;
+	}
+
+	if (NULL == pa_link) {
+		pr_err("%s: input null pa_link params \n", __func__);
+		return;
+	}
+
+#ifdef CONFIG_SND_SOC_MAX98925
+	maxim_smartpa_started = get_max_smartpa_drv_state();
+#endif
+
+#ifdef CONFIG_SND_SOC_TFA98XX
+	nxp_smartpa_started = get_nxp_smartpa_drv_state();
+#endif
+	/*if smartpa drv state not ok, do nothing */
+	if (true == (maxim_smartpa_started && nxp_smartpa_started )) {
+		pr_info("%s: smartpa driver still not work, do nothing \n", __func__);
+		return;
+#ifdef CONFIG_SND_SOC_MAX98925
+	} else {
+		get_max_smartpa_i2c_node(i2c_info);
+#endif
+	}
+
+	pr_info("%s: smartpa driver running, here check dailink to set to smartpa value.\n", __func__);
+
+	len = pa_daicount;
+	smartpa_dai = pa_link;
+	/*find smartpa dai from back*/
+	dailink += (daicount - 1);
+	for (j = daicount; j > 0; dailink--, j--) {
+		beid_val = dailink->be_id;
+		/* if be_id is 0, check another */
+		if (0 == beid_val)
+			continue;
+		smartpa_dai = pa_link;
+		for (i = 0; i < len; smartpa_dai++, i++) {
+			/*here we used be_dai to match dai_link, if match copy it*/
+			if (beid_val == smartpa_dai->be_id
+				|| (MSM_BACKEND_DAI_SENARY_MI2S_TX == beid_val && 0 == smartpa_dai->be_id)) {
+				memcpy(dailink, smartpa_dai, sizeof(struct snd_soc_dai_link));
+				smart_dai_count++;
+				pr_info("%s: dailink index %d set codec_dai_name to %s\n",
+					__func__, j, dailink->codec_dai_name);
+				break;
+			}
+		}
+		/*when found and modify enough dais break*/
+		if (smart_dai_count == len)
+			break;
+	}
+}
+#endif
+
 static int msm8952_asoc_machine_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card;
@@ -2907,6 +3094,14 @@ static int msm8952_asoc_machine_probe(struct platform_device *pdev)
 	int ret, id, i, val;
 	struct resource	*muxsel;
 	char *temp_str = NULL;
+	struct timespec ts = {0, 0};
+#if (defined CONFIG_SND_SOC_MAX98925) || (defined CONFIG_SND_SOC_TFA98XX)
+	const char *smart_pa = "speaker-pa";
+	const char *string = NULL;
+	struct snd_soc_dai_link *pa_link = NULL;
+	int pa_daicount = 0;
+#endif
+	audio_dsm_register();
 
 	pdata = devm_kzalloc(&pdev->dev,
 			sizeof(struct msm8916_asoc_mach_data), GFP_KERNEL);
@@ -3061,6 +3256,31 @@ parse_mclk_freq:
 	}
 
 	card = msm8952_populate_sndcard_dailinks(&pdev->dev);
+
+	ret = of_property_read_string(pdev->dev.of_node, smart_pa, &string);
+	if (ret || (NULL == string)) {
+		pr_err("hw_audio: read_string smart-pa failed %d\n", ret);
+	} else {
+		if (!strcmp(string, "tfa9895")) {
+#ifdef CONFIG_SND_SOC_TFA98XX
+			pa_link = msm8952_tfa9895_dai_link;
+			pa_daicount = ARRAY_SIZE(msm8952_tfa9895_dai_link);
+#endif
+		} else if (!strcmp(string, "max98925")) {
+#ifdef CONFIG_SND_SOC_MAX98925
+			pa_link = max98925_dai_link;
+			pa_daicount = ARRAY_SIZE(max98925_dai_link);
+#endif
+		} else {
+			dev_dbg(&pdev->dev, "could not read smartpa info\n");
+			pa_link = NULL;
+			pa_daicount = 0;
+		}
+	}
+
+	/*check whether smartpa driver faild*/
+	check_dai_link_for_smartpa(msm8952_dai_links, ARRAY_SIZE(msm8952_dai_links), pa_link, pa_daicount);
+
 	dev_info(&pdev->dev, "default codec configured\n");
 	num_strings = of_property_count_strings(pdev->dev.of_node,
 			ext_pa);
@@ -3186,6 +3406,13 @@ parse_mclk_freq:
 	}
 	return 0;
 err:
+	if (-EPROBE_DEFER != ret) {
+		get_monotonic_boottime(&ts);
+		if (ts.tv_sec >= DSM_REPORT_DELAY_TIME) {
+			audio_dsm_report_info(DSM_AUDIO_CARD_LOAD_FAIL_ERROR_NO,
+				 "%s ret = %d, time = %d", __func__, ret, ts.tv_sec);
+		}
+	}
 	if (pdata->vaddr_gpio_mux_spkr_ctl)
 		iounmap(pdata->vaddr_gpio_mux_spkr_ctl);
 	if (pdata->vaddr_gpio_mux_mic_ctl)

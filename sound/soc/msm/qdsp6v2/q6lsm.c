@@ -296,6 +296,7 @@ struct lsm_client *q6lsm_client_alloc(lsm_app_cb cb, void *priv)
 	n = q6lsm_session_alloc(client);
 	if (n <= 0) {
 		kfree(client);
+		client = NULL;
 		return NULL;
 	}
 	client->session = n;
