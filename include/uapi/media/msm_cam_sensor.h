@@ -19,6 +19,7 @@
 #define MAX_OIS_MOD_NAME_SIZE 32
 #define MAX_OIS_NAME_SIZE 32
 #define MAX_OIS_REG_SETTINGS 800
+#define MAX_OIS_REGSEQ_NUM 64
 
 #define MOVE_NEAR 0
 #define MOVE_FAR  1
@@ -44,7 +45,10 @@
 	/* 14  GRGR.. BGBG.. */
 #define MSM_V4L2_PIX_FMT_SRGGB14 v4l2_fourcc('R', 'G', '1', '4')
 	/* 14  RGRG.. GBGB.. */
-
+#define MAX_SUPPORT_SENSOR_COUNT 2
+#define APP_INFO_MAX_LINE_LEN 128
+#define MSM_ROLLOFF_MAX_LIGHT 4
+#define MSM_ROLLOFF_SIZE (17 * 13)
 enum flash_type {
 	LED_FLASH = 1,
 	STROBE_FLASH,
@@ -260,6 +264,9 @@ enum eeprom_cfg_type_t {
 	CFG_EEPROM_WRITE_DATA,
 	CFG_EEPROM_GET_MM_INFO,
 	CFG_EEPROM_INIT,
+	CFG_EEPROM_WRITE_BYTE,
+	CFG_EEPROM_READ_BYTE,
+	CFG_EEPROM_FRESH_MEM_DATA,
 };
 
 struct eeprom_get_t {
@@ -269,11 +276,13 @@ struct eeprom_get_t {
 struct eeprom_read_t {
 	uint8_t *dbuffer;
 	uint32_t num_bytes;
+	uint16_t addr;
 };
 
 struct eeprom_write_t {
 	uint8_t *dbuffer;
 	uint32_t num_bytes;
+	uint16_t addr;
 };
 
 struct eeprom_get_cmm_t {
@@ -342,6 +351,13 @@ enum msm_sensor_cfg_type_t {
 	CFG_WRITE_I2C_ARRAY_ASYNC,
 	CFG_WRITE_I2C_ARRAY_SYNC,
 	CFG_WRITE_I2C_ARRAY_SYNC_BLOCK,
+	/* optimize camera print mipi packet and frame count log*/
+	CFG_START_FRM_CNT,
+	CFG_STOP_FRM_CNT,
+	CFG_GET_OTP_FLAG,
+	CFG_SET_AFC_OTP_INFO,
+	CFG_SET_AWB_OTP_INFO,
+	CFG_SET_LSC_OTP_INFO,
 };
 
 enum msm_actuator_cfg_type_t {
@@ -368,6 +384,7 @@ enum msm_ois_cfg_type_t {
 	CFG_OIS_POWERUP,
 	CFG_OIS_CONTROL,
 	CFG_OIS_I2C_WRITE_SEQ_TABLE,
+	CFG_OIS_FLASH_WP_ENABLE,
 };
 
 enum msm_ois_cfg_download_type_t {
@@ -378,12 +395,14 @@ enum msm_ois_cfg_download_type_t {
 enum msm_ois_i2c_operation {
 	MSM_OIS_WRITE = 0,
 	MSM_OIS_POLL,
+	MSM_OIS_READ,
 };
-
 struct reg_settings_ois_t {
 	uint16_t reg_addr;
 	enum msm_camera_i2c_reg_addr_type addr_type;
 	uint32_t reg_data;
+	uint32_t seq_size;
+	uint8_t reg_seq[MAX_OIS_REGSEQ_NUM];
 	enum msm_camera_i2c_data_type data_type;
 	enum msm_ois_i2c_operation i2c_operation;
 	uint32_t delay;
@@ -397,6 +416,7 @@ struct msm_ois_params_t {
 	enum msm_camera_i2c_reg_addr_type i2c_addr_type;
 	enum msm_camera_i2c_data_type i2c_data_type;
 	struct reg_settings_ois_t *settings;
+	uint16_t flash_wp_enable;
 };
 
 struct msm_ois_set_info_t {
@@ -541,6 +561,7 @@ struct msm_flash_cfg_data_t {
 		struct msm_flash_init_info_t *flash_init_info;
 		struct msm_camera_i2c_reg_setting_array *settings;
 	} cfg;
+       int32_t flash_hw_cnt;
 };
 
 /* sensor init structures and enums */
@@ -548,6 +569,7 @@ enum msm_sensor_init_cfg_type_t {
 	CFG_SINIT_PROBE,
 	CFG_SINIT_PROBE_DONE,
 	CFG_SINIT_PROBE_WAIT_DONE,
+	CFG_SINIT_GET_PRODUCT_NAME,
 };
 
 struct sensor_init_cfg_data {
@@ -557,6 +579,45 @@ struct sensor_init_cfg_data {
 	union {
 		void *setting;
 	} cfg;
+};
+
+struct msm_sensor_afc_otp_info
+{
+	uint16_t starting_dac;
+	uint16_t infinity_dac;
+	uint16_t macro_dac;
+};
+
+struct msm_sensor_vendor_otp_info
+{
+	uint8_t vendor_id;
+};
+
+struct msm_sensor_awb_otp_info
+{
+	uint16_t RG;
+	uint16_t BG;
+	uint32_t typical_RG;
+	uint32_t typical_BG;
+};
+typedef struct{
+    uint16_t                  r_gain[MSM_ROLLOFF_SIZE];   // RGain
+    uint16_t                  gr_gain[MSM_ROLLOFF_SIZE];  // GRGain
+    uint16_t                  gb_gain[MSM_ROLLOFF_SIZE];  // GBGain
+    uint16_t                  b_gain[MSM_ROLLOFF_SIZE];   // BGain
+}msm_sensor_lsc_otp;
+
+struct msm_sensor_lsc_otp_info{
+  msm_sensor_lsc_otp  lsc_otp[MSM_ROLLOFF_MAX_LIGHT];
+};
+
+struct msm_sensor_mmi_otp_flag
+{
+	uint16_t mmi_otp_check_flag;
+};
+
+struct msm_support_product_name_info {
+      char product_name_info[MAX_SUPPORT_SENSOR_COUNT][APP_INFO_MAX_LINE_LEN];
 };
 
 #define VIDIOC_MSM_SENSOR_CFG \

@@ -1093,7 +1093,7 @@ enum {
 #define MDSS_PP_SPLIT_RIGHT_ONLY	0x20000000
 #define MDSS_PP_SPLIT_MASK		0x30000000
 
-#define MDSS_MAX_BL_BRIGHTNESS 255
+#define MDSS_MAX_BL_BRIGHTNESS 4095
 #define AD_BL_LIN_LEN 256
 #define AD_BL_ATT_LUT_LEN 33
 
@@ -1334,6 +1334,12 @@ struct mdp_page_protection {
 	uint32_t page_protection;
 };
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+enum inversion_mode {
+	COLUMN_INVERSION = 0,
+	DOT_INVERSION = 2,
+};
+#endif
 
 struct mdp_mixer_info {
 	int pndx;

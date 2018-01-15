@@ -7,6 +7,10 @@
 #include <asm/page.h>		/* pgprot_t */
 #include <linux/rbtree.h>
 
+#ifdef CONFIG_DEBUG_VMALLOC
+#include <linux/sched.h>
+#endif
+
 struct vm_area_struct;		/* vma defining user mapping in mm_types.h */
 
 /* bits in flags of vmalloc's vm_struct below */
@@ -39,6 +43,10 @@ struct vm_struct {
 	unsigned int		nr_pages;
 	phys_addr_t		phys_addr;
 	const void		*caller;
+#ifdef CONFIG_DEBUG_VMALLOC
+	unsigned int		pid;
+	unsigned char		task_name[TASK_COMM_LEN];
+#endif
 };
 
 struct vmap_area {
