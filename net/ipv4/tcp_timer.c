@@ -22,6 +22,13 @@
 #include <linux/gfp.h>
 #include <net/tcp.h>
 
+#ifdef CONFIG_HW_WIFIPRO
+#include "wifipro_tcp_monitor.h"
+#endif
+#ifdef CONFIG_HW_WIFI
+ #include "wifi_tcp_statistics.h"
+#endif
+
 int sysctl_tcp_syn_retries __read_mostly = TCP_SYN_RETRIES;
 int sysctl_tcp_synack_retries __read_mostly = TCP_SYNACK_RETRIES;
 int sysctl_tcp_keepalive_time __read_mostly = TCP_KEEPALIVE_TIME;
@@ -208,7 +215,6 @@ static int tcp_write_timeout(struct sock *sk)
 		if (retransmits_timed_out(sk, sysctl_tcp_retries1, 0, 0)) {
 			/* Black hole detection */
 			tcp_mtu_probing(icsk, sk);
-
 			dst_negative_advice(sk);
 		}
 
@@ -487,7 +493,14 @@ void tcp_retransmit_timer(struct sock *sk)
 	 */
 	icsk->icsk_backoff++;
 	icsk->icsk_retransmits++;
-
+#ifdef CONFIG_HW_WIFIPRO
+    if (is_wifipro_on) {
+        wifipro_handle_retrans(sk, icsk);
+    }
+#endif
+#ifdef CONFIG_HW_WIFI
+	wifi_IncrReSendSegs(sk, 1);
+#endif
 out_reset_timer:
 	/* If stream is thin, use linear timeouts. Since 'icsk_backoff' is
 	 * used to reset timer, set to 0. Recalculate 'icsk_rto' as this
