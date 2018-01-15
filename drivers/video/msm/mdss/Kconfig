@@ -72,3 +72,10 @@ config FB_MSM_MDSS_FRC_DEBUG
 	frame rate control (FRC) debugging features to: Collect video frame
 	statistics and check whether its output pattern matches expected
 	cadence.
+
+config HUAWEI_KERNEL_LCD
+	depends on HUAWEI_KERNEL
+	bool "LCD display support"
+	default n
+	---help---
+	use huawei feature

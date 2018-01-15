@@ -30,6 +30,10 @@
 #include "mdss_smmu.h"
 #include "mdss_dsi_phy.h"
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+#include <linux/hw_lcd_common.h>
+#endif
+
 #define VSYNC_PERIOD 17
 #define DMA_TX_TIMEOUT 200
 #define DMA_TPG_FIFO_LEN 64
@@ -118,6 +122,9 @@ void mdss_dsi_ctrl_init(struct device *ctrl_dev,
 	mutex_init(&ctrl->mutex);
 	mutex_init(&ctrl->cmd_mutex);
 	mutex_init(&ctrl->clk_lane_mutex);
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+	mutex_init(&ctrl->panel_data.LCD_checksum_lock);
+#endif
 	mutex_init(&ctrl->cmdlist_mutex);
 	mdss_dsi_buf_alloc(ctrl_dev, &ctrl->tx_buf, SZ_4K);
 	mdss_dsi_buf_alloc(ctrl_dev, &ctrl->rx_buf, SZ_4K);
@@ -1422,6 +1429,83 @@ void mdss_dsi_ctrl_setup(struct mdss_dsi_ctrl_pdata *ctrl)
 	mdss_dsi_op_mode_config(pdata->panel_info.mipi.mode, pdata);
 }
 
+#ifdef CONFIG_HUAWEI_KERNEL_LCD
+int hw_mdss_dsi_bta_status_check(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+{
+	int ret = 0;
+	unsigned long flag;
+
+	if (ctrl_pdata == NULL) {
+		pr_err("%s: Invalid input data\n", __func__);
+
+		/*
+		 * This should not return error otherwise
+		 * BTA status thread will treat it as dead panel scenario
+		 * and request for blank/unblank
+		 */
+		return 0;
+	}
+
+	mutex_lock(&ctrl_pdata->cmd_mutex);
+
+	pr_debug("%s: Checking BTA status\n", __func__);
+
+	mdss_dsi_clk_ctrl(ctrl_pdata, ctrl_pdata->dsi_clk_handle,
+			  MDSS_DSI_ALL_CLKS, MDSS_DSI_CLK_ON);
+	spin_lock_irqsave(&ctrl_pdata->mdp_lock, flag);
+	reinit_completion(&ctrl_pdata->bta_comp);
+	mdss_dsi_enable_irq(ctrl_pdata, DSI_BTA_TERM);
+	spin_unlock_irqrestore(&ctrl_pdata->mdp_lock, flag);
+	MIPI_OUTP(ctrl_pdata->ctrl_base + 0x098, 0x01); /* trigger  */
+	wmb();
+
+	ret = wait_for_completion_killable_timeout(&ctrl_pdata->bta_comp,
+						DSI_BTA_EVENT_TIMEOUT);
+	if (ret <= 0) {
+		mdss_dsi_disable_irq(ctrl_pdata, DSI_BTA_TERM);
+		pr_err("%s: DSI BTA error: %i\n", __func__, ret);
+	}
+
+	mdss_dsi_clk_ctrl(ctrl_pdata, ctrl_pdata->dsi_clk_handle,
+			  MDSS_DSI_ALL_CLKS, MDSS_DSI_CLK_OFF);
+	pr_debug("%s: BTA done with ret: %d\n", __func__, ret);
+
+	mutex_unlock(&ctrl_pdata->cmd_mutex);
+
+	return ret;
+}
+
+int mdss_dsi_bta_status_check(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
+{
+	int ret = 0;
+	struct mdss_panel_info *pinfo = &(ctrl_pdata->panel_data.panel_info);
+	if (ctrl_pdata == NULL) {
+		pr_err("%s: Invalid input data\n", __func__);
+		/*
+		* This should not return error otherwise
+		* BTA status thread will treat it as dead panel scenario
+		* and request for blank/unblank
+		*/
+		return 0;
+	}
+
+	pr_debug("%s: Checking BTA status\n", __func__);
+
+	if(pinfo->bta_timeout_check){
+		ret=hw_mdss_dsi_bta_status_check(ctrl_pdata);
+		if(ret <= 0){
+			pr_err("%s: DSI BTA error: %i\n", __func__, ret);
+			return 0;
+		}
+	}
+
+	/*if panel check error and enable the esd check bit in dtsi,report the event to hal layer*/
+	if(ctrl_pdata->esd_check_enable)
+		ret = panel_check_live_status(ctrl_pdata);
+	return ret;
+}
+#else
+
 /**
  * mdss_dsi_bta_status_check() - Check dsi panel status through bta check
  * @ctrl_pdata: pointer to the dsi controller structure
@@ -1490,6 +1574,7 @@ int mdss_dsi_bta_status_check(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 
 	return ret;
 }
+#endif
 
 int mdss_dsi_cmd_reg_tx(u32 data,
 			unsigned char *ctrl_base)
@@ -2031,6 +2116,9 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 	char *bp;
 	struct mdss_dsi_ctrl_pdata *mctrl = NULL;
 	int ignored = 0;	/* overflow ignored */
+#ifdef CONFIG_HUAWEI_DSM
+	int rg_address;
+#endif
 
 	bp = tp->data;
 
@@ -2044,6 +2132,11 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 		if (IS_ERR_VALUE(ret)) {
 			pr_err("unable to map dma memory to iommu(%d)\n", ret);
 			ctrl->mdss_util->iommu_unlock();
+
+            #ifdef CONFIG_HUAWEI_DSM
+            lcd_report_dsm_err(DSM_LCD_MDSS_IOMMU_ERROR_NO,ret,0);
+            #endif
+
 			return -ENOMEM;
 		}
 		ctrl->dmap_iommu_map = true;
@@ -2132,6 +2225,13 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 		mctrl->dma_addr = 0;
 		mctrl->dma_size = 0;
 	}
+
+#ifdef CONFIG_HUAWEI_DSM
+	if (ret < 0) {
+		rg_address =  ((tp->len > 4) ? *(tp->data + 4) : *(tp->data));
+		lcd_report_dsm_err(DSM_LCD_MIPI_ERROR_NO, ret, rg_address);
+	}
+#endif
 
 	if (ctrl->dmap_iommu_map) {
 		mdss_smmu_dsi_unmap_buffer(ctrl->dma_addr, domain,
@@ -2481,8 +2581,12 @@ void mdss_dsi_cmd_mdp_busy(struct mdss_dsi_ctrl_pdata *ctrl)
 		if (!ctrl->mdp_busy)
 			rc = 1;
 		spin_unlock_irqrestore(&ctrl->mdp_lock, flags);
-		if (!rc && mdss_dsi_mdp_busy_tout_check(ctrl))
+		if (!rc && mdss_dsi_mdp_busy_tout_check(ctrl)) {
+#ifdef CONFIG_HUAWEI_DSM
+			lcd_report_dsm_err(DSM_LCD_MDSS_MDP_BUSY_ERROR_NO,0,0);
+#endif
 			pr_err("%s: timeout error\n", __func__);
+		}
 	}
 	pr_debug("%s: done pid=%d\n", __func__, current->pid);
 	MDSS_XLOG(ctrl->ndx, ctrl->mdp_busy, current->pid, XLOG_FUNC_EXIT);
@@ -3188,6 +3292,11 @@ irqreturn_t mdss_dsi_isr(int irq, void *ptr)
 			mdss_dsi_set_reg(ctrl, 0x0c, 0x44440000, 0x44440000);
 		}
 		spin_unlock(&ctrl->mdp_lock);
+	}
+
+	if (isr & DSI_INTR_ERROR) {
+		MDSS_XLOG(ctrl->ndx, ctrl->mdp_busy, isr, 0x97);
+		mdss_dsi_error(ctrl);
 	}
 
 	if (isr & DSI_INTR_VIDEO_DONE) {
