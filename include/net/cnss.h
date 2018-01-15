@@ -19,7 +19,6 @@
 #include <linux/interrupt.h>
 
 #ifdef CONFIG_CNSS
-#define MAX_FIRMWARE_SIZE (1 * 1024 * 1024)
 #define CNSS_MAX_FILE_NAME	20
 #define PINCTRL_SLEEP  0
 #define PINCTRL_ACTIVE 1
