@@ -2026,6 +2026,22 @@ void audit_log_secctx(struct audit_buffer *ab, u32 secid)
 EXPORT_SYMBOL(audit_log_secctx);
 #endif
 
+void audit_log_data(struct audit_buffer *ab, char **data)
+{
+        struct nlmsghdr *nlh = NULL;
+
+        if (!ab || !ab->skb) {
+                return;
+        }
+
+        nlh = nlmsg_hdr(ab->skb);
+        *data = nlmsg_data(nlh);
+
+        return;
+}
+
+EXPORT_SYMBOL(audit_log_data);
+
 EXPORT_SYMBOL(audit_log_start);
 EXPORT_SYMBOL(audit_log_end);
 EXPORT_SYMBOL(audit_log_format);

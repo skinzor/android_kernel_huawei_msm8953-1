@@ -49,6 +49,14 @@
 
 #include <asm/uaccess.h>
 
+#ifdef CONFIG_HUAWEI_KERNEL
+#define KMSGCAT_TASK_NAME "kmsgcat"
+#define LOGD_TASK_NAME "logd"
+#define LEN_KMSGCAT_TASK_NAME 8
+
+static bool is_first_printed = false;
+#endif
+
 #define CREATE_TRACE_POINTS
 #include <trace/events/printk.h>
 
@@ -227,6 +235,8 @@ struct printk_log {
 	u8 facility;		/* syslog facility */
 	u8 flags:5;		/* internal record flags */
 	u8 level:3;		/* syslog level */
+	pid_t pid;		/* task pid */
+	char comm[TASK_COMM_LEN];		/* task name */
 #if defined(CONFIG_LOG_BUF_MAGIC)
 	u32 magic;		/* handle for ramdump analysis tools */
 #endif
@@ -274,6 +284,7 @@ static u32 clear_idx;
 /* record buffer */
 #define LOG_ALIGN __alignof__(struct printk_log)
 #define __LOG_BUF_LEN (1 << CONFIG_LOG_BUF_SHIFT)
+
 static char __log_buf[__LOG_BUF_LEN] __aligned(LOG_ALIGN);
 static char *log_buf = __log_buf;
 static u32 log_buf_len = __LOG_BUF_LEN;
@@ -466,6 +477,9 @@ static int log_store(int facility, int level,
 	msg->facility = facility;
 	msg->level = level & 7;
 	msg->flags = flags & 0x1f;
+	msg->pid = current->pid;
+	memset(msg->comm, 0, TASK_COMM_LEN);
+	memcpy(msg->comm, current->comm, TASK_COMM_LEN-1);
 	LOG_MAGIC(msg);
 	if (ts_nsec > 0)
 		msg->ts_nsec = ts_nsec;
@@ -1031,6 +1045,20 @@ static size_t print_time(u64 ts, char *buf)
 		       (unsigned long)ts, rem_nsec / 1000);
 }
 
+static bool printk_task_info = 1;
+module_param_named(task_info, printk_task_info, bool, S_IRUGO | S_IWUSR);
+
+static size_t print_task_info(pid_t pid, const char *task_name, char *buf)
+{
+	if (!printk_task_info)
+		return 0;
+
+	if (!buf)
+		return snprintf(NULL, 0, "[%d, %s]", pid, task_name);
+
+	return sprintf(buf, "[%d, %s]", pid, task_name);
+}
+
 static size_t print_prefix(const struct printk_log *msg, bool syslog, char *buf)
 {
 	size_t len = 0;
@@ -1050,6 +1078,7 @@ static size_t print_prefix(const struct printk_log *msg, bool syslog, char *buf)
 		}
 	}
 
+	len += print_task_info(msg->pid, msg->comm, buf ? buf + len : NULL);
 	len += print_time(msg->ts_nsec, buf ? buf + len : NULL);
 	return len;
 }
@@ -1113,6 +1142,69 @@ static size_t msg_print_text(const struct printk_log *msg, enum log_flags prev,
 	return len;
 }
 
+int kmsg_print_to_ddr(char *buf, int size)
+{
+	char *text;
+	struct printk_log *msg;
+	int len = 0;
+	u64 kmsg_seq = 0;
+	u32 kmsg_idx = 0;
+	enum log_flags kmsg_prev = 0;
+	size_t kmsg_partial = 0;
+
+	text = kmalloc(LOG_LINE_MAX + PREFIX_MAX, GFP_KERNEL);
+	if (!text)
+		return -ENOMEM;
+
+	while (size > 0) {
+		size_t n;
+		size_t skip;
+
+		raw_spin_lock_irq(&logbuf_lock);
+		if (kmsg_seq < log_first_seq) {
+			/* messages are gone, move to first one */
+			kmsg_seq = log_first_seq;
+			kmsg_idx = log_first_idx;
+			kmsg_prev = 0;
+			kmsg_partial = 0;
+		}
+		if (kmsg_seq == log_next_seq) {
+			raw_spin_unlock_irq(&logbuf_lock);
+			break;
+		}
+
+		skip = kmsg_partial;
+		msg = log_from_idx(kmsg_idx);
+		n = msg_print_text(msg, kmsg_prev, true, text,
+				   LOG_LINE_MAX + PREFIX_MAX);
+		if (n - kmsg_partial <= size) {
+			/* message fits into buffer, move forward */
+			kmsg_idx = log_next(kmsg_idx);
+			kmsg_seq++;
+			kmsg_prev = msg->flags;
+			n -= kmsg_partial;
+			kmsg_partial = 0;
+		} else if (!len){
+			/* partial read(), remember position */
+			n = size;
+			kmsg_partial += n;
+		} else
+			n = 0;
+		raw_spin_unlock_irq(&logbuf_lock);
+
+		if (!n)
+			break;
+
+		memcpy(buf, text + skip, n);
+
+		len += n;
+		size -= n;
+		buf += n;
+	}
+
+	kfree(text);
+	return len;
+}
 static int syslog_print(char __user *buf, int size)
 {
 	char *text;
@@ -1298,6 +1390,21 @@ int do_syslog(int type, char __user *buf, int len, bool from_file)
 			error = -EFAULT;
 			goto out;
 		}
+#ifdef CONFIG_HUAWEI_KERNEL
+		if(strncmp(KMSGCAT_TASK_NAME,current->comm, LEN_KMSGCAT_TASK_NAME))
+		{
+			error = -EFAULT;
+			if(!strstr(current->comm, LOGD_TASK_NAME))
+			{
+				if(!is_first_printed)
+				{
+					printk(KERN_ERR"Process %s attempt to read logbuf, not allow!\n", current->comm);
+					is_first_printed = true;
+				}
+			}
+			goto out;
+		}
+#endif
 		error = wait_event_interruptible(log_wait,
 						 syslog_seq != log_next_seq);
 		if (error)
