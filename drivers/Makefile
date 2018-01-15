@@ -171,3 +171,20 @@ obj-$(CONFIG_BIF)		+= bif/
 
 obj-$(CONFIG_SENSORS)		+= sensors/
 obj-$(CONFIG_SENSORS_SSC)	+= sensors/
+
+obj-y				+= huawei/
+obj-$(CONFIG_HUAWEI_HW_DEV_DCT) += devdetect/
+# <t-base drivers
+obj-$(CONFIG_MOBICORE_DRIVER)	+= gud/
+obj-y     += dsm/
+obj-$(CONFIG_HUAWEI_DRIVERS)	+=huawei_platform/
+
+obj-$(CONFIG_HW_GADGET)     += hwusb/
+
+obj-$(CONFIG_HUAWEI_FACTORY_INFO)	+= hw_fac_info/
+
+obj-$(CONFIG_KRETPROBES) += rphone/
+obj-$(CONFIG_CPU_STRESS_TEST) += cpu_stress/
+# DTS_EAGLE START
+obj-$(CONFIG_DTS_EAGLE)     += dts_eagle/
+# DTS_EAGLE END
