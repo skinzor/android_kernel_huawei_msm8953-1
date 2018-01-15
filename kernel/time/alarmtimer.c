@@ -60,6 +60,7 @@ static struct rtc_timer		rtctimer;
 static struct rtc_device	*rtcdev;
 static DEFINE_SPINLOCK(rtcdev_lock);
 static struct mutex power_on_alarm_lock;
+#define ALARM_DELTA 60
 
 /**
  * set_power_on_alarm - set power on alarm value into rtc register
@@ -114,6 +115,16 @@ void set_power_on_alarm(void)
 	rtc_tm_to_time(&rtc_time, &rtc_secs);
 	alarm_delta = wall_time.tv_sec - rtc_secs;
 	alarm_time = alarm_secs - alarm_delta;
+
+	/*
+	 * Substract ALARM_DELTA from actual alarm time to power up
+	 * the device before actual alarm expiration.
+	 */
+	if ((alarm_time - ALARM_DELTA) > rtc_secs) {
+		alarm_time -= ALARM_DELTA;
+	} else {
+		goto disable_alarm;
+	}
 
 	rtc_time_to_tm(alarm_time, &alarm.time);
 	alarm.enabled = 1;

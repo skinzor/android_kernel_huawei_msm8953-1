@@ -19,8 +19,10 @@
 #include <linux/kmod.h>
 #include <trace/events/power.h>
 #include <linux/wakeup_reason.h>
+#include <linux/wakelock.h>
+#include "power.h"
 
-/* 
+/*
  * Timeout for stopping processes
  */
 unsigned int __read_mostly freeze_timeout_msecs = 20 * MSEC_PER_SEC;
@@ -207,6 +209,9 @@ int freeze_kernel_threads(void)
 {
 	int error;
 
+	error = suspend_sys_sync_wait();
+	if(error)
+		return error;
 	printk("Freezing remaining freezable tasks ... ");
 	pm_nosig_freezing = true;
 	error = try_to_freeze_tasks(false);

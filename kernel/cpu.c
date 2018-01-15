@@ -514,9 +514,21 @@ out:
 	return ret;
 }
 
+bool cbt_mode = false;
+static int __init is_cbt_mode(char *str)
+{
+	cbt_mode = true;
+	return 0;
+}
+
+early_param("cbt_mode", is_cbt_mode);
+
 int cpu_up(unsigned int cpu)
 {
 	int err = 0;
+
+	if (cbt_mode)
+		return 0;
 
 	if (!cpu_possible(cpu)) {
 		pr_err("can't online cpu %d because it is not configured as may-hotadd at boot time\n",
