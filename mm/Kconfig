@@ -698,3 +698,11 @@ config PROCESS_RECLAIM
 	 (addr, addr + size-bytes) of the process.
 
 	 Any other vaule is ignored.
+
+config DEBUG_VMALLOC
+	bool "Enable VMALLOC debugging support"
+	help
+	  This enables the inclusion of a few debugging parameters, which
+	  are the PID and the name of the task requesting vmalloc.
+
+	  Disabling these can result in savings in code size.
