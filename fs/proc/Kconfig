@@ -71,3 +71,10 @@ config PROC_PAGE_MONITOR
 	  /proc/pid/smaps, /proc/pid/clear_refs, /proc/pid/pagemap,
 	  /proc/kpagecount, and /proc/kpageflags. Disabling these
           interfaces will reduce the size of the kernel by approximately 4kb.
+
+config APP_INFO
+	bool "/proc/app_info support"
+	default n
+	depends on PROC_FS
+	help
+	  export huawei device infomation by /proc/app_info
