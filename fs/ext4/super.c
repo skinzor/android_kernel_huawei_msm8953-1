@@ -54,6 +54,17 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/ext4.h>
 
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+#define FS_DSM_BUFFER_SIZE  1024
+#include <dsm/dsm_pub.h>
+struct dsm_dev dsm_fs = {
+	.name = "dsm_ext4",
+	.fops = NULL,
+	.buff_size = FS_DSM_BUFFER_SIZE,
+};
+struct dsm_client *ext4_fs_dclient = NULL;
+#endif
+
 static struct proc_dir_entry *ext4_proc_root;
 static struct kset *ext4_kset;
 static struct ext4_lazy_init *ext4_li_info;
@@ -432,6 +443,13 @@ void __ext4_error(struct super_block *sb, const char *function,
 		printk(KERN_CRIT
 		       "EXT4-fs error (device %s): %s:%d: comm %s: %pV\n",
 		       sb->s_id, function, line, current->comm, &vaf);
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+	if(!dsm_client_ocuppy(ext4_fs_dclient))
+	{
+		dsm_client_record(ext4_fs_dclient,"EXT4-fs error (device %s): %s:%d\n",sb->s_id, function, line);
+		dsm_client_notify(ext4_fs_dclient, DSM_FS_EXT4_ERROR);
+	}
+#endif
 		va_end(args);
 	}
 	save_error_info(sb, function, line);
@@ -452,6 +470,14 @@ void __ext4_error_inode(struct inode *inode, const char *function,
 		va_start(args, fmt);
 		vaf.fmt = fmt;
 		vaf.va = &args;
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+	if(!dsm_client_ocuppy(ext4_fs_dclient))
+	{
+		dsm_client_record(ext4_fs_dclient,"EXT4-fs error (device %s): %s:%d:inode #%lu\n",
+				inode->i_sb->s_id, function, line, inode->i_ino);
+		dsm_client_notify(ext4_fs_dclient, DSM_FS_EXT4_ERROR_INODE);
+	}
+#endif
 		if (block)
 			printk(KERN_CRIT "EXT4-fs error (device %s): %s:%d: "
 			       "inode #%lu: block %llu: comm %s: %pV\n",
@@ -484,6 +510,14 @@ void __ext4_error_file(struct file *file, const char *function,
 		path = d_path(&(file->f_path), pathname, sizeof(pathname));
 		if (IS_ERR(path))
 			path = "(unknown)";
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+	if(!dsm_client_ocuppy(ext4_fs_dclient))
+	{
+		dsm_client_record(ext4_fs_dclient,"EXT4-fs error (device %s): %s:%d:inode #%lu\n",
+			inode->i_sb->s_id, function, line, inode->i_ino);
+		dsm_client_notify(ext4_fs_dclient, DSM_FS_EXT4_ERROR_FILE);
+	}
+#endif
 		va_start(args, fmt);
 		vaf.fmt = fmt;
 		vaf.va = &args;
@@ -3470,6 +3504,13 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 
 	if (!(bh = sb_bread_unmovable(sb, logical_sb_block))) {
 		ext4_msg(sb, KERN_ERR, "unable to read superblock");
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+		if(!dsm_client_ocuppy(ext4_fs_dclient))
+		{
+			dsm_client_record(ext4_fs_dclient,"EXT4-fs(%s):unable to read superblock\n",sb->s_id);
+			dsm_client_notify(ext4_fs_dclient, DSM_FS_EXT4_ERROR_READ_SUPER);
+		}
+#endif
 		goto out_fail;
 	}
 	/*
@@ -3685,6 +3726,13 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 		if (!bh) {
 			ext4_msg(sb, KERN_ERR,
 			       "Can't read superblock on 2nd try");
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+			if(!dsm_client_ocuppy(ext4_fs_dclient))
+			{
+				dsm_client_record(ext4_fs_dclient,"EXT4-fs(%s):Can't read superblock on 2nd try\n",sb->s_id);
+				dsm_client_notify(ext4_fs_dclient, DSM_FS_EXT4_ERROR_READ_SUPER_SECOND);
+			}
+#endif
 			goto failed_mount;
 		}
 		es = (struct ext4_super_block *)(bh->b_data + offset);
@@ -4604,6 +4652,13 @@ static int ext4_commit_super(struct super_block *sb, int sync)
 		if (error) {
 			ext4_msg(sb, KERN_ERR, "I/O error while writing "
 			       "superblock");
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+			if(!dsm_client_ocuppy(ext4_fs_dclient))
+			{
+				dsm_client_record(ext4_fs_dclient,"EXT4-fs(%s):I/O error while writing superblock\n",sb->s_id);
+				dsm_client_notify(ext4_fs_dclient, DSM_FS_EXT4_ERROR_WRITE_SUPER);
+			}
+#endif
 			clear_buffer_write_io_error(sbh);
 			set_buffer_uptodate(sbh);
 		}
@@ -5597,6 +5652,13 @@ static int __init ext4_init_fs(void)
 	err = register_filesystem(&ext4_fs_type);
 	if (err)
 		goto out;
+
+#ifdef CONFIG_HUAWEI_EMMC_DSM
+	if(!ext4_fs_dclient)
+	{
+		ext4_fs_dclient = dsm_register_client(&dsm_fs);
+	}
+#endif
 
 	return 0;
 out:
