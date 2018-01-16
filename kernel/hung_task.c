@@ -101,9 +101,6 @@ static void check_hung_task(struct task_struct *t, unsigned long timeout)
 	if (!sysctl_hung_task_warnings)
 		return;
 
-	if (sysctl_hung_task_warnings > 0)
-		sysctl_hung_task_warnings--;
-
 	/*
 	 * Ok, the task did not get scheduled for more than 2 minutes,
 	 * complain:
@@ -116,11 +113,14 @@ static void check_hung_task(struct task_struct *t, unsigned long timeout)
 		init_utsname()->version);
 	pr_err("\"echo 0 > /proc/sys/kernel/hung_task_timeout_secs\""
 		" disables this message.\n");
-	sched_show_task(t);
 	debug_show_held_locks(t);
 
 	touch_nmi_watchdog();
 
+	show_state_filter(TASK_UNINTERRUPTIBLE);
+	printk(KERN_ERR "INFO: task %s:%d blocked for more than "
+			"%ld seconds.\n", t->comm, t->pid, timeout);
+	sched_show_task(t);
 	if (sysctl_hung_task_panic) {
 		trigger_all_cpu_backtrace();
 		panic("hung_task: blocked tasks");
@@ -177,6 +177,7 @@ static void check_hung_uninterruptible_tasks(unsigned long timeout)
 			if (!rcu_lock_break(g, t))
 				goto unlock;
 		}
+
 		/* use "==" to skip the TASK_KILLABLE tasks waiting on NFS */
 		if (t->state == TASK_UNINTERRUPTIBLE)
 			check_hung_task(t, timeout);
@@ -231,11 +232,6 @@ static int watchdog(void *dummy)
 
 		while (schedule_timeout_interruptible(timeout_jiffies(timeout)))
 			timeout = sysctl_hung_task_timeout_secs;
-
-		if (atomic_xchg(&reset_hung_task, 0))
-			continue;
-
-		check_hung_uninterruptible_tasks(timeout);
 	}
 
 	return 0;

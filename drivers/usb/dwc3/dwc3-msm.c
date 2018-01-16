@@ -2412,11 +2412,6 @@ static irqreturn_t msm_dwc3_pwr_irq(int irq, void *data)
              dev_dbg(mdwc->dev, "%s chg_type=%d, irq%d return IRQ_HANDLED\n", __func__, mdwc->chg_type, irq);
              return IRQ_HANDLED;
          }
-        pm_stay_awake(mdwc->dev);
-        if (DWC3_DCP_CHARGER == mdwc->chg_type || DWC3_PROPRIETARY_CHARGER == mdwc->chg_type) {
-             dev_dbg(mdwc->dev, "%s chg_type=%d, irq%d return IRQ_HANDLED\n", __func__, mdwc->chg_type, irq);
-             return IRQ_HANDLED;
-         }
 
 		/* set this to call dwc3_msm_resume() */
 		mdwc->resume_pending = true;
