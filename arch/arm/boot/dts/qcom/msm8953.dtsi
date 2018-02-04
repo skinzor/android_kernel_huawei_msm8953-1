@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -65,7 +65,7 @@
 
 		modem_mem: modem_region@0 {
 			compatible = "removed-dma-pool";
-			no-map;
+			no-map-fixup;
 			reg = <0x0 0x86c00000 0x0 0x6a00000>;
 		};
 
@@ -315,10 +315,8 @@
 		reg-names = "tsens_physical", "tsens_eeprom_physical";
 		interrupts = <0 184 0>, <0 314 0>;
 		interrupt-names = "tsens-upper-lower", "tsens-critical";
-		qcom,client-id = <1 2 3 4 5 6 7 8 9 10 11 12 13 14 15>;
-		qcom,sensor-id = <1 2 3 4 5 6 7 8 9 10 11 12 13 14 15>;
-		qcom,sensors = <15>;
-		qcom,slope = <3200 3200 3200 3200 3200 3200 3200 3200
+		qcom,sensors = <16>;
+		qcom,slope = <3200 3200 3200 3200 3200 3200 3200 3200 3200
 					3200 3200 3200 3200 3200 3200 3200>;
 		qcom,valid-status-check;
 	};
@@ -589,8 +587,8 @@
 	qcom,msm-core@a0000 {
 		compatible = "qcom,apss-core-ea";
 		reg = <0xa0000 0x1000>;
-		qcom,low-hyst-temp = <100>;
-		qcom,high-hyst-temp = <100>;
+		qcom,low-hyst-temp = <10>;
+		qcom,high-hyst-temp = <5>;
 
 		ea0: ea0 {
 			sensor = <&sensor_information9>;
@@ -668,42 +666,6 @@
 		qcom,msm-bus,vectors-KBps =
 				<86 512 0 0>,
 				<86 512 500 800>;
-		status = "disabled";
-	};
-
-	blsp2_uart0: uart@7aef000 {
-		compatible = "qcom,msm-hsuart-v14";
-		reg = <0x7aef000 0x200>,
-			<0x7ac4000 0x1f000>;
-		reg-names = "core_mem", "bam_mem";
-
-		interrupt-names = "core_irq", "bam_irq", "wakeup_irq";
-		#address-cells = <0>;
-		interrupt-parent = <&blsp2_uart0>;
-		interrupts = <0 1 2>;
-		#interrupt-cells = <1>;
-		interrupt-map-mask = <0xffffffff>;
-		interrupt-map = <0 &intc 0 306 0
-				1 &intc 0 239 0
-				2 &tlmm 17 0>;
-
-		qcom,inject-rx-on-wakeup;
-		qcom,rx-char-to-inject = <0xFD>;
-		qcom,master-id = <84>;
-		clock-names = "core_clk", "iface_clk";
-		clocks = <&clock_gcc clk_gcc_blsp2_uart1_apps_clk>,
-			<&clock_gcc clk_gcc_blsp2_ahb_clk>;
-		pinctrl-names = "sleep", "default";
-		pinctrl-0 = <&blsp2_uart0_sleep>;
-		pinctrl-1 = <&blsp2_uart0_active>;
-		qcom,bam-tx-ep-pipe-index = <0>;
-		qcom,bam-rx-ep-pipe-index = <1>;
-		qcom,msm-bus,name = "blsp2_uart0";
-		qcom,msm-bus,num-cases = <2>;
-		qcom,msm-bus,num-paths = <1>;
-		qcom,msm-bus,vectors-KBps =
-				<84 512 0 0>,
-				<84 512 500 800>;
 		status = "disabled";
 	};
 
@@ -925,9 +887,8 @@
 
 	clock_gcc: qcom,gcc@1800000 {
 		compatible = "qcom,gcc-8953";
-		reg = <0x1800000 0x80000>,
-			<0x00a4124 0x08>;
-		reg-names = "cc_base", "efuse";
+		reg = <0x1800000 0x80000>;
+		reg-names = "cc_base";
 		vdd_dig-supply = <&pm8953_s2_level>;
 		#clock-cells = <1>;
 	};
@@ -994,7 +955,7 @@
 			< 1036800000 2>,
 			< 1401600000 3>,
 			< 1689600000 4>,
-			< 1804800000 5>,
+			< 1843200000 5>,
 			< 1958400000 6>,
 			< 2016000000 7>;
 		qcom,speed0-bin-v0-cci =
@@ -1003,7 +964,7 @@
 			<  414720000 2>,
 			<  560640000 3>,
 			<  675840000 4>,
-			<  721920000 5>,
+			<  737280000 5>,
 			<  783360000 6>,
 			<  806400000 7>;
 		qcom,speed2-bin-v0-cl =
@@ -1012,7 +973,7 @@
 			< 1036800000 2>,
 			< 1401600000 3>,
 			< 1689600000 4>,
-			< 1804800000 5>,
+			< 1843200000 5>,
 			< 1958400000 6>,
 			< 2016000000 7>;
 		qcom,speed2-bin-v0-cci =
@@ -1021,7 +982,7 @@
 			<  414720000 2>,
 			<  560640000 3>,
 			<  675840000 4>,
-			<  721920000 5>,
+			<  737280000 5>,
 			<  783360000 6>,
 			<  806400000 7>;
 		qcom,speed7-bin-v0-cl =
@@ -1030,7 +991,7 @@
 			< 1036800000 2>,
 			< 1401600000 3>,
 			< 1689600000 4>,
-			< 1804800000 5>,
+			< 1843200000 5>,
 			< 1958400000 6>,
 			< 2016000000 7>,
 			< 2150400000 8>,
@@ -1041,25 +1002,11 @@
 			<  414720000 2>,
 			<  560640000 3>,
 			<  675840000 4>,
-			<  721920000 5>,
+			<  737280000 5>,
 			<  783360000 6>,
 			<  806400000 7>,
 			<  860160000 8>,
 			<  883200000 9>;
-		qcom,speed6-bin-v0-cl =
-			<          0 0>,
-			<  652800000 1>,
-			< 1036800000 2>,
-			< 1401600000 3>,
-			< 1689600000 4>,
-			< 1804800000 5>;
-		qcom,speed6-bin-v0-cci =
-			<          0 0>,
-			<  261120000 1>,
-			<  414720000 2>,
-			<  560640000 3>,
-			<  675840000 4>,
-			<  721920000 5>;
 		#clock-cells = <1>;
 	};
 
@@ -1083,7 +1030,7 @@
 			 < 1036800 >,
 			 < 1401600 >,
 			 < 1689600 >,
-			 < 1804800 >,
+			 < 1843200 >,
 			 < 1958400 >,
 			 < 2016000 >,
 			 < 2150400 >,
@@ -1145,7 +1092,7 @@
 			 < 1036800  3221>,
 			 < 1401600  5859>,
 			 < 1689600  6445>,
-			 < 1804800  7104>,
+			 < 1843200  7104>,
 			 < 1958400  7104>,
 			 < 2208000  7104>;
 		};
@@ -1448,8 +1395,6 @@
 		interrupt-names = "ipa-irq", "bam-irq";
 		qcom,ipa-hw-ver = <6>; /* IPA core version = IPAv2.6L */
 		qcom,ipa-hw-mode = <0>; /* IPA hw type = Normal */
-		qcom,wan-rx-ring-size = <192>; /* IPA WAN-rx-ring-size*/
-		qcom,lan-rx-ring-size = <192>; /* IPA LAN-rx-ring-size*/
 		clock-names = "core_clk";
 		clocks = <&clock_gcc clk_ipa_clk>;
 		qcom,ee = <0>;
@@ -1742,6 +1687,7 @@
 		qcom,msm-bus,num-cases = <4>;
 		qcom,msm-bus,num-paths = <1>;
 		qcom,support-bus-scaling;
+		qcom,appsbl-qseecom-support;
 		qcom,msm-bus,vectors-KBps =
 			<55 512 0 0>,
 			<55 512 0 0>,
@@ -2142,13 +2088,13 @@
 		interrupt-names = "hs_phy_irq", "ss_phy_irq", "pwr_event_irq";
 
 		USB3_GDSC-supply = <&gdsc_usb30>;
+		vbus_dwc3-supply = <&smbcharger_charger_otg>;
 		qcom,usb-dbm = <&dbm_1p5>;
 		qcom,msm-bus,name = "usb3";
-		qcom,msm-bus,num-cases = <3>;
+		qcom,msm-bus,num-cases = <2>;
 		qcom,msm-bus,num-paths = <1>;
 		qcom,msm-bus,vectors-KBps =
 					<61 512 0 0>,
-					<61 512 240000 800000>,
 					<61 512 240000 800000>;
 
 		qcom,dwc-usb3-msm-tx-fifo-size = <21288>;
@@ -2245,10 +2191,12 @@
 	qusb_phy: qusb@79000 {
 		compatible = "qcom,qusb2phy";
 		reg = <0x079000 0x180>,
+			<0x070f8800 0x400>,
 			<0x01841030 0x4>,
 			<0x0193f044 0x4>,
 			<0x0193f020 0x4>;
 		reg-names = "qusb_phy_base",
+			"qscratch_base",
 			"ref_clk_addr",
 			"tcsr_phy_clk_scheme_sel",
 			"tcsr_phy_level_shift_keeper";
@@ -2378,7 +2326,7 @@
 					0x974 0x8d8 0x8dc 0x804 0x800
 					0x808>;
 		vdd-supply = <&pm8953_l3>;
-		core-supply = <&pm8953_l7>;
+		vdda18-supply = <&pm8953_l7>;
 		qcom,vdd-voltage-level = <0 925000 925000>;
 		qcom,vbus-valid-override;
 
@@ -2411,6 +2359,7 @@
 #include "msm-pm8953-rpm-regulator.dtsi"
 #include "msm-pm8953.dtsi"
 #include "msm8953-regulator.dtsi"
+#include "msm-pmi8950.dtsi"
 #include "msm-audio.dtsi"
 #include "msm8953-audio.dtsi"
 #include "msm-gdsc-8916.dtsi"
