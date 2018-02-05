@@ -1651,6 +1651,7 @@ struct cfg80211_sched_scan_request {
 	int n_ssids;
 	u32 n_channels;
 	enum nl80211_bss_scan_width scan_width;
+	u32 interval;
 	const u8 *ie;
 	size_t ie_len;
 	u32 flags;
