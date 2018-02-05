@@ -183,11 +183,12 @@ int dpcm_dapm_stream_event(struct snd_soc_pcm_runtime *fe, int dir,
 
 		dev_dbg(be->dev, "ASoC: BE %s event %d dir %d\n",
 				be->dai_link->name, event, dir);
-		if (event == SND_SOC_DAPM_STREAM_STOP && be->dpcm[dir].users >= 1) {
-			pr_debug("%s Don't close BE \n", __func__);
+
+		if ((event == SND_SOC_DAPM_STREAM_STOP) &&
+		    (be->dpcm[dir].users >= 1))
 			continue;
-		}
-			snd_soc_dapm_stream_event(be, dir, event);
+
+		snd_soc_dapm_stream_event(be, dir, event);
 	}
 
 	snd_soc_dapm_stream_event(fe, dir, event);
@@ -2320,6 +2321,10 @@ void dpcm_be_dai_prepare_async(struct snd_soc_pcm_runtime *fe, int stream,
 							    dpcm, domain);
 		} else {
 			dpcm_async[i++] = dpcm;
+			if (i == DPCM_MAX_BE_USERS) {
+				dev_dbg(fe->dev, "ASoC: MAX backend users!\n");
+				break;
+			}
 		}
 	}
 
