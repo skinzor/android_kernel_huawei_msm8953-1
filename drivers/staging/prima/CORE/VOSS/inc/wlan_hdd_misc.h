@@ -31,7 +31,7 @@
 #ifdef MSM_PLATFORM
 #ifdef QC_WLAN_CHIPSET_PRIMA
 #ifdef CONFIG_HUAWEI_WIFI
-#define WLAN_INI_FILE              "../wifi/WCNSS_qcom_cfg.ini"
+#define WLAN_INI_FILE              "../../vendor/etc/wifi/WCNSS_qcom_cfg.ini"
 #define WLAN_CFG_FILE              "wlan/prima/WCNSS_cfg.dat"
 #define WLAN_FW_FILE               ""
 #define WLAN_NV_FILE               "load/WCNSS_hw_wlan_nv.bin"
