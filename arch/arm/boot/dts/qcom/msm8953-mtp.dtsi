@@ -13,6 +13,7 @@
 
 #include "msm8953-pinctrl.dtsi"
 #include "msm8953-audio-mtp.dtsi"
+#include "msm-pmi8950.dtsi"
 
 &spi_3 { /* BLSP1 QUP3 */
 	spi-max-frequency = <16000000>;
