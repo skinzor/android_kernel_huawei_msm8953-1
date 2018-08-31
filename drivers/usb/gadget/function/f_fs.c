@@ -689,7 +689,6 @@ static void ffs_user_copy_worker(struct work_struct *work)
 
 	usb_ep_free_request(io_data->ep, io_data->req);
 
-	io_data->kiocb->private = NULL;
 	if (io_data->read)
 		kfree(io_data->iovec);
 	kfree(io_data->buf);
@@ -708,34 +707,21 @@ static void ffs_epfile_async_io_complete(struct usb_ep *_ep,
 }
 
 #define MAX_BUF_LEN	4096
-
-#ifdef CONFIG_HUAWEI_USB
-#define WRITE_TIME    60
-#endif
-
 static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 {
 	struct ffs_epfile *epfile = file->private_data;
 	struct ffs_ep *ep;
+	struct ffs_data *ffs = epfile->ffs;
 	char *data = NULL;
 	ssize_t ret, data_len = -EINVAL;
 	int halt;
 	size_t extra_buf_alloc = 0;
-
-#ifdef CONFIG_HUAWEI_USB
-	long err = 0;
-
-	long time_size;
-	if (!io_data->read){
-		time_size = WRITE_TIME*HZ;
-	} else {
-		time_size = MAX_SCHEDULE_TIMEOUT;
-	}
-#endif
+	bool first_read = false;
 
 	pr_debug("%s: len %zu, read %d\n", __func__, io_data->len,
 			io_data->read);
 
+retry:
 	if (atomic_read(&epfile->error))
 		return -ENODEV;
 
@@ -769,6 +755,11 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 			if (ret < 0)
 				goto error;
 		}
+		/*
+		 * set if function eps are not enabled for the first
+		 * epfile_read
+		 */
+		first_read = true;
 		if (!ep) {
 			ret = -ENODEV;
 			goto error;
@@ -928,25 +919,6 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 
 			if (unlikely(ret < 0)) {
 				ret = -EIO;
-#ifdef CONFIG_HUAWEI_USB
-			} else if ((err = wait_for_completion_interruptible_timeout(done, time_size)) <= 0) {
-				spin_lock_irq(&epfile->ffs->eps_lock);
-				/*
-				* While we were acquiring lock endpoint got disabled
-				* (disconnect) or changed (composition switch) ?
-				*/
-				if (epfile->ep == ep)
-					usb_ep_dequeue(ep->ep, req);
-					spin_unlock_irq(&epfile->ffs->eps_lock);
-
-				if( (!io_data->read) && !err) {
-					pr_err("f_fs: %s: wait_for_completion timeout, io_data->read:%d,io_data->len(%d)\n", __func__, io_data->read,(int)io_data->len);
-					ret = -ETIMEDOUT;
-				} else {
-					pr_err("f_fs: %s: wait_for_completion be EINTR, io_data->read:%d,io_data->len(%d)\n", __func__, io_data->read,(int)io_data->len);
-					ret = -EINTR;
-				}
-#else
 			} else if (unlikely(
 				   wait_for_completion_interruptible(done))) {
 				spin_lock_irq(&epfile->ffs->eps_lock);
@@ -959,7 +931,6 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 					usb_ep_dequeue(ep->ep, req);
 				spin_unlock_irq(&epfile->ffs->eps_lock);
 				ret = -EINTR;
-#endif
 			} else {
 				/*
 				 * XXX We may end up silently droping data
@@ -978,6 +949,28 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 					ret = ep->status;
 				else
 					ret = -ENODEV;
+
+				/* do wait again if func eps are not enabled */
+				if (io_data->read && first_read && (ret < 0)) {
+					unsigned short count = ffs->eps_count;
+					pr_debug("%s: waiting for the online state\n",
+						 __func__);
+					ret = 0;
+					kfree(data);
+					data = NULL;
+					data_len = -EINVAL;
+					spin_unlock_irq(&epfile->ffs->eps_lock);
+					mutex_unlock(&epfile->mutex);
+					epfile = ffs->epfiles;
+					do {
+						atomic_set(&epfile->error, 0);
+						++epfile;
+					} while (--count);
+					epfile = file->private_data;
+					first_read = false;
+					goto retry;
+				}
+
 				spin_unlock_irq(&epfile->ffs->eps_lock);
 
 				if (io_data->read && ret > 0) {
@@ -1615,14 +1608,14 @@ static void ffs_data_clear(struct ffs_data *ffs)
 {
 	ENTER();
 
-	pr_debug("%s: ffs->gadget= %p, ffs->flags= %lu\n", __func__,
+	pr_debug("%s: ffs->gadget= %pK, ffs->flags= %lu\n", __func__,
 			ffs->gadget, ffs->flags);
 
 	ffs_closed(ffs);
 
 	/* Dump ffs->gadget and ffs->flags */
 	if (ffs->gadget)
-		pr_err("%s: ffs:%p ffs->gadget= %p, ffs->flags= %lu\n",
+		pr_err("%s: ffs:%pK ffs->gadget= %pK, ffs->flags= %lu\n",
 				__func__, ffs, ffs->gadget, ffs->flags);
 	BUG_ON(ffs->gadget);
 

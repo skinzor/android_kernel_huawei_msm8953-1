@@ -23,14 +23,18 @@
 #include <linux/usb/msm_hsusb.h>
 #include <asm/unaligned.h>
 
-#ifdef CONFIG_HUAWEI_USB
-#include <chipset_common/hwusb/hw_usb_rwswitch.h>
-#endif
-
 #include "u_os_desc.h"
 #define SSUSB_GADGET_VBUS_DRAW 900 /* in mA */
 #define SSUSB_GADGET_VBUS_DRAW_UNITS 8
 #define HSUSB_GADGET_VBUS_DRAW_UNITS 2
+
+/*
+ * Based on enumerated USB speed, draw power with set_config and resume
+ * HSUSB: 500mA, SSUSB: 900mA
+ */
+#define USB_VBUS_DRAW(speed)\
+	(speed == USB_SPEED_SUPER ?\
+	SSUSB_GADGET_VBUS_DRAW : CONFIG_USB_GADGET_VBUS_DRAW)
 
 static bool enable_l1_for_hs;
 module_param(enable_l1_for_hs, bool, S_IRUGO | S_IWUSR);
@@ -212,7 +216,7 @@ int usb_add_function(struct usb_configuration *config,
 {
 	int	value = -EINVAL;
 
-	DBG(config->cdev, "adding '%s'/%p to config '%s'/%p\n",
+	DBG(config->cdev, "adding '%s'/%pK to config '%s'/%pK\n",
 			function->name, function,
 			config->label, config);
 
@@ -247,7 +251,7 @@ int usb_add_function(struct usb_configuration *config,
 
 done:
 	if (value)
-		DBG(config->cdev, "adding '%s'/%p --> %d\n",
+		DBG(config->cdev, "adding '%s'/%pK --> %d\n",
 				function->name, function, value);
 	return value;
 }
@@ -666,7 +670,7 @@ static int bos_desc(struct usb_composite_dev *cdev)
 	usb_ext->bLength = USB_DT_USB_EXT_CAP_SIZE;
 	usb_ext->bDescriptorType = USB_DT_DEVICE_CAPABILITY;
 	usb_ext->bDevCapabilityType = USB_CAP_TYPE_EXT;
-	usb_ext->bmAttributes = cpu_to_le32(USB_LPM_SUPPORT);
+	usb_ext->bmAttributes = cpu_to_le32(USB_LPM_SUPPORT | USB_BESL_SUPPORT);
 
 	if (gadget_is_superspeed(cdev->gadget)) {
 		/*
@@ -754,7 +758,6 @@ static int set_config(struct usb_composite_dev *cdev,
 	struct usb_gadget	*gadget = cdev->gadget;
 	struct usb_configuration *c = NULL;
 	int			result = -EINVAL;
-	unsigned		power = gadget_is_otg(gadget) ? 8 : 100;
 	int			tmp;
 
 	/*
@@ -851,7 +854,7 @@ static int set_config(struct usb_composite_dev *cdev,
 
 		result = f->set_alt(f, tmp, 0);
 		if (result < 0) {
-			DBG(cdev, "interface %d (%s/%p) alt 0 --> %d\n",
+			DBG(cdev, "interface %d (%s/%pK) alt 0 --> %d\n",
 					tmp, f->name, f, result);
 
 			reset_config(cdev);
@@ -868,14 +871,8 @@ static int set_config(struct usb_composite_dev *cdev,
 		}
 	}
 
-	/* Allow 900mA to draw with Super-Speed */
-	if (gadget->speed == USB_SPEED_SUPER)
-		power = SSUSB_GADGET_VBUS_DRAW;
-	else
-		power = CONFIG_USB_GADGET_VBUS_DRAW;
-
 done:
-	usb_gadget_vbus_draw(gadget, power);
+	usb_gadget_vbus_draw(gadget, USB_VBUS_DRAW(gadget->speed));
 	if (result >= 0 && cdev->delayed_status)
 		result = USB_GADGET_DELAYED_STATUS;
 	return result;
@@ -930,7 +927,7 @@ int usb_add_config(struct usb_composite_dev *cdev,
 	if (!bind)
 		goto done;
 
-	DBG(cdev, "adding config #%u '%s'/%p\n",
+	DBG(cdev, "adding config #%u '%s'/%pK\n",
 			config->bConfigurationValue,
 			config->label, config);
 
@@ -947,7 +944,7 @@ int usb_add_config(struct usb_composite_dev *cdev,
 					struct usb_function, list);
 			list_del(&f->list);
 			if (f->unbind) {
-				DBG(cdev, "unbind function '%s'/%p\n",
+				DBG(cdev, "unbind function '%s'/%pK\n",
 					f->name, f);
 				f->unbind(config, f);
 				/* may free memory for "f" */
@@ -958,7 +955,7 @@ int usb_add_config(struct usb_composite_dev *cdev,
 	} else {
 		unsigned	i;
 
-		DBG(cdev, "cfg %d/%p speeds:%s%s%s\n",
+		DBG(cdev, "cfg %d/%pK speeds:%s%s%s\n",
 			config->bConfigurationValue, config,
 			config->superspeed ? " super" : "",
 			config->highspeed ? " high" : "",
@@ -973,7 +970,7 @@ int usb_add_config(struct usb_composite_dev *cdev,
 
 			if (!f)
 				continue;
-			DBG(cdev, "  interface %d = %s/%p\n",
+			DBG(cdev, "  interface %d = %s/%pK\n",
 				i, f->name, f);
 		}
 	}
@@ -1001,13 +998,13 @@ static void unbind_config(struct usb_composite_dev *cdev,
 				struct usb_function, list);
 		list_del(&f->list);
 		if (f->unbind) {
-			DBG(cdev, "unbind function '%s'/%p\n", f->name, f);
+			DBG(cdev, "unbind function '%s'/%pK\n", f->name, f);
 			f->unbind(config, f);
 			/* may free memory for "f" */
 		}
 	}
 	if (config->unbind) {
-		DBG(cdev, "unbind config '%s'/%p\n", config->label, config);
+		DBG(cdev, "unbind config '%s'/%pK\n", config->label, config);
 		config->unbind(config);
 			/* may free memory for "c" */
 	}
@@ -1655,7 +1652,7 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 				cdev->gadget->ep0->maxpacket;
 			if (gadget_is_superspeed(gadget)) {
 				if (gadget->speed >= USB_SPEED_SUPER) {
-					cdev->desc.bcdUSB = cpu_to_le16(0x0300);
+					cdev->desc.bcdUSB = cpu_to_le16(0x0310);
 					cdev->desc.bMaxPacketSize0 = 9;
 				} else if (gadget->l1_supported ||
 						enable_l1_for_hs) {
@@ -1706,7 +1703,8 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 		case USB_DT_BOS:
 			if ((gadget_is_superspeed(gadget) &&
 				(gadget->speed >= USB_SPEED_SUPER))
-				 || gadget->l1_supported) {
+				 || (gadget->l1_supported
+					|| enable_l1_for_hs)) {
 				value = bos_desc(cdev);
 				value = min(w_length, (u16) value);
 			}
@@ -1847,13 +1845,6 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 			break;
 		}
 		break;
-		case USB_REQ_VENDOR_SWITCH_MODE:
-			if ((ctrl->bRequestType != (USB_DIR_IN|USB_TYPE_VENDOR|USB_RECIP_DEVICE)) || (w_index != 0)) {
-				goto unknown;			/* Handle vendor customized request */
-			}
-			INFO(cdev, "vendor request: %d index: %d value: %d length: %d\n",ctrl->bRequest, w_index, w_value, w_length);
-			hw_usb_port_switch_request(14);
-		break;
 	default:
 unknown:
 		/*
@@ -1962,6 +1953,8 @@ unknown:
 			break;
 
 		case USB_RECIP_ENDPOINT:
+			if (!cdev->config)
+				break;
 			endp = ((w_index & 0x80) >> 3) | (w_index & 0x0f);
 			list_for_each_entry(f, &cdev->config->functions, list) {
 				if (test_bit(endp, f->endpoints))
@@ -2068,7 +2061,7 @@ static ssize_t suspended_show(struct device *dev, struct device_attribute *attr,
 	struct usb_gadget *gadget = dev_to_usb_gadget(dev);
 	struct usb_composite_dev *cdev = get_gadget_data(gadget);
 
-	return sprintf(buf, "%d\n", cdev->suspended);
+	return snprintf(buf, PAGE_SIZE, "%d\n", cdev->suspended);
 }
 static DEVICE_ATTR_RO(suspended);
 
@@ -2316,7 +2309,6 @@ composite_resume(struct usb_gadget *gadget)
 {
 	struct usb_composite_dev	*cdev = get_gadget_data(gadget);
 	struct usb_function		*f;
-	u16				maxpower;
 	int ret;
 	unsigned long			flags;
 
@@ -2349,10 +2341,7 @@ composite_resume(struct usb_gadget *gadget)
 				f->resume(f);
 		}
 
-		maxpower = cdev->config->MaxPower;
-
-		usb_gadget_vbus_draw(gadget, maxpower ?
-			maxpower : CONFIG_USB_GADGET_VBUS_DRAW);
+		usb_gadget_vbus_draw(gadget, USB_VBUS_DRAW(gadget->speed));
 	}
 
 	spin_unlock_irqrestore(&cdev->lock, flags);
