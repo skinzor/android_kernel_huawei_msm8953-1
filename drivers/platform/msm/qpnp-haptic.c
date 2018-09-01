@@ -62,7 +62,6 @@
 #define QPNP_HAP_ACT_TYPE_MASK		0xFE
 #define QPNP_HAP_LRA			0x0
 #define QPNP_HAP_ERM			0x1
-#define QPNP_HAP_PM660_HW_AUTO_RES_MODE_BIT	BIT(3)
 #define QPNP_HAP_AUTO_RES_MODE_MASK	GENMASK(6, 4)
 #define QPNP_HAP_AUTO_RES_MODE_SHIFT	4
 #define QPNP_HAP_PM660_AUTO_RES_MODE_BIT	BIT(7)
@@ -319,7 +318,6 @@ struct qpnp_pwm_info {
  *  @ reg_play - play register
  *  @ lra_res_cal_period - period for resonance calibration
  *  @ sc_duration - counter to determine the duration of short circuit condition
- *  @ lra_hw_auto_resonance - enable hardware auto resonance
  *  @ state - current state of haptics
  *  @ use_play_irq - play irq usage state
  *  @ use_sc_irq - short circuit irq usage state
@@ -382,7 +380,6 @@ struct qpnp_hap {
 	u8 ext_pwm_dtest_line;
 	u8 pmic_subtype;
 	u8 auto_res_mode;
-	bool lra_hw_auto_resonance;
 	bool vcc_pon_enabled;
 	bool state;
 	bool use_play_irq;
@@ -1647,8 +1644,7 @@ static int qpnp_hap_set(struct qpnp_hap *hap, int on)
 					return rc;
 			}
 			if (hap->act_type == QPNP_HAP_LRA &&
-					hap->correct_lra_drive_freq &&
-					!hap->lra_hw_auto_resonance) {
+						hap->correct_lra_drive_freq) {
 				/*
 				 * Start timer to poll Auto Resonance error bit
 				 */
@@ -1666,14 +1662,12 @@ static int qpnp_hap_set(struct qpnp_hap *hap, int on)
 
 			if (hap->act_type == QPNP_HAP_LRA &&
 				hap->correct_lra_drive_freq &&
-				(hap->status_flags & AUTO_RESONANCE_ENABLED) &&
-				!hap->lra_hw_auto_resonance)
+				(hap->status_flags & AUTO_RESONANCE_ENABLED))
 				update_lra_frequency(hap);
 
 			rc = qpnp_hap_mod_enable(hap, on);
 			if (hap->act_type == QPNP_HAP_LRA &&
-					hap->correct_lra_drive_freq &&
-					!hap->lra_hw_auto_resonance) {
+					hap->correct_lra_drive_freq) {
 				hrtimer_cancel(&hap->auto_res_err_poll_timer);
 			}
 		}
@@ -1691,8 +1685,7 @@ static void qpnp_hap_td_enable(struct timed_output_dev *dev, int value)
 	mutex_lock(&hap->lock);
 
 	if (hap->act_type == QPNP_HAP_LRA &&
-				hap->correct_lra_drive_freq &&
-				!hap->lra_hw_auto_resonance)
+				hap->correct_lra_drive_freq)
 		hrtimer_cancel(&hap->auto_res_err_poll_timer);
 
 	hrtimer_cancel(&hap->hap_timer);
@@ -1899,15 +1892,6 @@ static int qpnp_hap_config(struct qpnp_hap *hap)
 
 	/* Configure auto resonance parameters */
 	if (hap->act_type == QPNP_HAP_LRA) {
-		if (hap->lra_hw_auto_resonance) {
-			rc = qpnp_hap_masked_write_reg(hap,
-				QPNP_HAP_PM660_HW_AUTO_RES_MODE_BIT,
-				QPNP_HAP_AUTO_RES_CTRL(hap->base),
-				QPNP_HAP_PM660_HW_AUTO_RES_MODE_BIT);
-			if (rc)
-				return rc;
-		}
-
 		if (hap->pmic_subtype == PM660_SUBTYPE) {
 			if (hap->lra_res_cal_period <
 					QPNP_HAP_PM660_RES_CAL_PERIOD_MIN)
@@ -2337,10 +2321,6 @@ static int qpnp_hap_parse_dt(struct qpnp_hap *hap)
 			return rc;
 		}
 
-		hap->lra_hw_auto_resonance =
-				of_property_read_bool(spmi->dev.of_node,
-				"qcom,lra-hw-auto-resonance");
-
 		hap->perform_lra_auto_resonance_search =
 				of_property_read_bool(spmi->dev.of_node,
 				"qcom,perform-lra-auto-resonance-search");
@@ -2604,8 +2584,7 @@ static int qpnp_haptic_probe(struct spmi_device *spmi)
 	hap->timed_dev.get_time = qpnp_hap_get_time;
 	hap->timed_dev.enable = qpnp_hap_td_enable;
 
-	if (hap->act_type == QPNP_HAP_LRA && hap->correct_lra_drive_freq &&
-						!hap->lra_hw_auto_resonance) {
+	if (hap->act_type == QPNP_HAP_LRA && hap->correct_lra_drive_freq) {
 		hrtimer_init(&hap->auto_res_err_poll_timer, CLOCK_MONOTONIC,
 						HRTIMER_MODE_REL);
 		hap->auto_res_err_poll_timer.function = detect_auto_res_error;
@@ -2650,8 +2629,7 @@ sysfs_fail:
 	timed_output_dev_unregister(&hap->timed_dev);
 timed_output_fail:
 	cancel_work_sync(&hap->work);
-	if (hap->act_type == QPNP_HAP_LRA && hap->correct_lra_drive_freq &&
-						!hap->lra_hw_auto_resonance)
+	if (hap->act_type == QPNP_HAP_LRA && hap->correct_lra_drive_freq)
 		hrtimer_cancel(&hap->auto_res_err_poll_timer);
 	hrtimer_cancel(&hap->hap_timer);
 	mutex_destroy(&hap->lock);
@@ -2670,8 +2648,7 @@ static int qpnp_haptic_remove(struct spmi_device *spmi)
 				&qpnp_hap_attrs[i].attr);
 
 	cancel_work_sync(&hap->work);
-	if (hap->act_type == QPNP_HAP_LRA && hap->correct_lra_drive_freq &&
-						!hap->lra_hw_auto_resonance)
+	if (hap->act_type == QPNP_HAP_LRA && hap->correct_lra_drive_freq)
 		hrtimer_cancel(&hap->auto_res_err_poll_timer);
 	hrtimer_cancel(&hap->hap_timer);
 	timed_output_dev_unregister(&hap->timed_dev);
