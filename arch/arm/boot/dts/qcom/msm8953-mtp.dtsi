@@ -14,6 +14,7 @@
 #include "msm8953-pinctrl.dtsi"
 #include "msm8953-audio-mtp.dtsi"
 #include "msm-pmi8950.dtsi"
+#include "msm8953-qrd-sku3.dtsi"
 
 &soc {
 	led_flash0: qcom,camera-flash {
