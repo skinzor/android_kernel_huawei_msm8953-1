@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -32,11 +32,10 @@
 #include <soc/qcom/scm.h>
 #include <soc/qcom/restart.h>
 #include <soc/qcom/watchdog.h>
-
 #ifdef CONFIG_HUAWEI_RESET_DETECT
 #include <linux/huawei_reset_detect.h>
 #endif
- 
+
 #include <linux/fcntl.h>
 #include <linux/syscalls.h>
 #define MISC_DEVICE "/dev/block/bootdevice/by-name/misc"
@@ -47,7 +46,6 @@ struct bootloader_message {
     char recovery[768];
     char stage[32];
 };
-
 #define EMERGENCY_DLOAD_MAGIC1    0x322A4F99
 #define EMERGENCY_DLOAD_MAGIC2    0xC67E4350
 #define EMERGENCY_DLOAD_MAGIC3    0x77777777
@@ -59,7 +57,6 @@ struct bootloader_message {
 #define SCM_DLOAD_MODE			0X10
 #define SCM_EDLOAD_MODE			0X01
 #define SCM_DLOAD_CMD			0x10
-
 
 static int restart_mode;
 static void *dload_type_addr;
@@ -76,7 +73,7 @@ static void scm_disable_sdi(void);
 * There is no API from TZ to re-enable the registers.
 * So the SDI cannot be re-enabled when it already by-passed.
 */
-static int download_mode = 1;
+static int download_mode = 0;
 #else
 static const int download_mode;
 #endif
@@ -89,7 +86,6 @@ static const int download_mode;
 #define USBUPDATE_FLAG_MAGIC_NUM  0x77665523
 #define SD_UPDATE_RESET_FLAG   "sdupdate"
 #define USB_UPDATE_RESET_FLAG   "usbupdate"
-
 static int in_panic;
 static void *dload_mode_addr;
 static bool dload_mode_enabled;
@@ -333,7 +329,6 @@ static void msm_restart_prepare(const char *cmd)
 	set_dload_mode(download_mode &&
 			(in_panic || restart_mode == RESTART_DLOAD));
 #endif
-
 #ifdef CONFIG_HUAWEI_RESET_DETECT
 	/* if the restart is triggered by panic, keep the magic number
 	* if the restart is a nomal reboot, clear the reset magic number*/
@@ -351,8 +346,13 @@ static void msm_restart_prepare(const char *cmd)
 			need_warm_reset = true;
 	} else {
 		need_warm_reset = (in_panic || get_dload_mode() ||
-				(cmd != NULL && cmd[0] != '\0'));
+				((cmd != NULL && cmd[0] != '\0') &&
+				strcmp(cmd, "userrequested")));
 	}
+
+#ifdef CONFIG_MSM_PRESERVE_MEM
+	need_warm_reset = true;
+#endif
 
 	/* Hard reset the PMIC unless memory contents must be maintained. */
 	if (need_warm_reset) {
@@ -588,7 +588,6 @@ static int msm_restart_probe(struct platform_device *pdev)
 		if (!emergency_dload_mode_addr)
 			pr_err("unable to map imem EDLOAD mode offset\n");
 	}
-
 	np = of_find_compatible_node(NULL, NULL,
 				"qcom,msm-imem-dload-type");
 	if (!np) {
