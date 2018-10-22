@@ -1031,11 +1031,11 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
 
 	/* Continue a partial initialization */
 	if (type == HUB_INIT2 || type == HUB_INIT3) {
-		device_lock(&hdev->dev);
+		device_lock(hub->intfdev);
 
 		/* Was the hub disconnected while we were waiting? */
 		if (hub->disconnected) {
-			device_unlock(&hdev->dev);
+			device_unlock(hub->intfdev);
 			kref_put(&hub->kref, hub_release);
 			return;
 		}
@@ -1241,7 +1241,7 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
 			queue_delayed_work(system_power_efficient_wq,
 					&hub->init_work,
 					msecs_to_jiffies(delay));
-			device_unlock(&hdev->dev);
+			device_unlock(hub->intfdev);
 			return;		/* Continues at init3: below */
 		} else {
 			msleep(delay);
@@ -1265,7 +1265,7 @@ static void hub_activate(struct usb_hub *hub, enum hub_activation_type type)
 		usb_autopm_put_interface_async(to_usb_interface(hub->intfdev));
 
 	if (type == HUB_INIT2 || type == HUB_INIT3)
-		device_unlock(&hdev->dev);
+		device_unlock(hub->intfdev);
 
 	kref_put(&hub->kref, hub_release);
 }
