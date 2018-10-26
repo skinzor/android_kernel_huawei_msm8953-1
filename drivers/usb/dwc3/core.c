@@ -878,6 +878,8 @@ static int dwc3_probe(struct platform_device *pdev)
 
 		dwc->disable_clk_gating = of_property_read_bool(node,
 					"snps,disable-clk-gating");
+		dwc->no_set_vbus_power = of_property_read_bool(node,
+					"no-set-vbus-power");
 
 		dwc->num_normal_event_buffers = 1;
 		ret = of_property_read_u32(node,

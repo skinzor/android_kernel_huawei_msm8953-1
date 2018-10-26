@@ -51,9 +51,15 @@ struct smd_port_info smd_pi[SMD_N_PORTS] = {
 	{
 		.name = "DS",
 	},
+#ifndef CONFIG_HUAWEI_USB
 	{
 		.name = "UNUSED",
 	},
+#else
+	{
+		.name = "DATA2",
+	},
+#endif
 };
 
 struct gsmd_port {
@@ -514,10 +520,18 @@ static unsigned int convert_acm_sigs_to_uart(unsigned acm_sig)
 	/* should this needs to be in calling functions ??? */
 	acm_sig &= (SMD_ACM_CTRL_DTR | SMD_ACM_CTRL_RTS);
 
+#ifdef CONFIG_HUAWEI_USB
+	if (acm_sig & SMD_ACM_CTRL_DTR) {
+		uart_sig |= TIOCM_DTR;
+	}
+
+	uart_sig |= TIOCM_RTS;
+#else
 	if (acm_sig & SMD_ACM_CTRL_DTR)
 		uart_sig |= TIOCM_DTR;
 	if (acm_sig & SMD_ACM_CTRL_RTS)
 		uart_sig |= TIOCM_RTS;
+#endif
 
 	return uart_sig;
 }

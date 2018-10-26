@@ -708,6 +708,11 @@ static void ffs_epfile_async_io_complete(struct usb_ep *_ep,
 }
 
 #define MAX_BUF_LEN	4096
+
+#ifdef CONFIG_HUAWEI_USB
+#define WRITE_TIME    60
+#endif
+
 static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 {
 	struct ffs_epfile *epfile = file->private_data;
@@ -716,6 +721,17 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 	ssize_t ret, data_len = -EINVAL;
 	int halt;
 	size_t extra_buf_alloc = 0;
+
+#ifdef CONFIG_HUAWEI_USB
+	long err = 0;
+
+	long time_size;
+	if (!io_data->read){
+		time_size = WRITE_TIME*HZ;
+	} else {
+		time_size = MAX_SCHEDULE_TIMEOUT;
+	}
+#endif
 
 	pr_debug("%s: len %zu, read %d\n", __func__, io_data->len,
 			io_data->read);
@@ -912,6 +928,25 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 
 			if (unlikely(ret < 0)) {
 				ret = -EIO;
+#ifdef CONFIG_HUAWEI_USB
+			} else if ((err = wait_for_completion_interruptible_timeout(done, time_size)) <= 0) {
+				spin_lock_irq(&epfile->ffs->eps_lock);
+				/*
+				* While we were acquiring lock endpoint got disabled
+				* (disconnect) or changed (composition switch) ?
+				*/
+				if (epfile->ep == ep)
+					usb_ep_dequeue(ep->ep, req);
+					spin_unlock_irq(&epfile->ffs->eps_lock);
+
+				if( (!io_data->read) && !err) {
+					pr_err("f_fs: %s: wait_for_completion timeout, io_data->read:%d,io_data->len(%d)\n", __func__, io_data->read,(int)io_data->len);
+					ret = -ETIMEDOUT;
+				} else {
+					pr_err("f_fs: %s: wait_for_completion be EINTR, io_data->read:%d,io_data->len(%d)\n", __func__, io_data->read,(int)io_data->len);
+					ret = -EINTR;
+				}
+#else
 			} else if (unlikely(
 				   wait_for_completion_interruptible(done))) {
 				spin_lock_irq(&epfile->ffs->eps_lock);
@@ -924,6 +959,7 @@ static ssize_t ffs_epfile_io(struct file *file, struct ffs_io_data *io_data)
 					usb_ep_dequeue(ep->ep, req);
 				spin_unlock_irq(&epfile->ffs->eps_lock);
 				ret = -EINTR;
+#endif
 			} else {
 				/*
 				 * XXX We may end up silently droping data

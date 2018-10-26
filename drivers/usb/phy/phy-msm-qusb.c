@@ -25,6 +25,30 @@
 #include <linux/usb/phy.h>
 #include <linux/usb/msm_hsusb.h>
 
+#ifdef CONFIG_HUAWEI_USB
+#include <linux/usb/huawei_usb.h>
+#endif
+
+#ifdef CONFIG_HUAWEI_USB
+#undef pr_err
+#define pr_err usb_logs_err
+
+#undef pr_info
+#define pr_info usb_logs_info
+
+#undef pr_debug
+#define pr_debug usb_logs_dbg
+
+#undef dev_info
+#define dev_info usb_dev_info
+
+#undef dev_err
+#define dev_err usb_dev_err
+
+#undef dev_dbg
+#define dev_dbg usb_dev_dbg
+#endif
+
 /* TCSR_PHY_CLK_SCHEME_SEL bit mask */
 #define PHY_CLK_SCHEME_SEL BIT(0)
 
@@ -113,6 +137,18 @@
 
 #define QUSB2PHY_REFCLK_ENABLE		BIT(0)
 
+#define QUSB2PHY_PLL_AUTOPGM_CTL1		0x1C
+#define QUSB2PHY_PLL_PWR_CTL				0x18
+#define REF_BUF_EN 			BIT(0)
+#define REXT_EN				BIT(1)
+#define PLL_BYPASSNL		BIT(2)
+#define QUSB2PHY_PORT_QUICKCHARGE1		0x70
+#define QUSB2PHY_PORT_QUICKCHARGE2		0x74
+#define QUSB2PHY_PORT_INT_STATUS			0xF0
+
+static unsigned int tune;
+module_param(tune, uint, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(tune, "QUSB PHY TUNE");
 unsigned int tune2;
 module_param(tune2, uint, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(tune2, "QUSB PHY TUNE2");
@@ -702,6 +738,7 @@ static int qusb_phy_init(struct usb_phy *phy)
 	struct qusb_phy *qphy = container_of(phy, struct qusb_phy, phy);
 	int ret, reset_val = 0;
 	bool is_se_clk = true;
+	unsigned int t1 = 0, t2 = 0, t3 = 0, t4 = 0;
 
 	dev_dbg(phy->dev, "%s\n", __func__);
 
@@ -771,6 +808,29 @@ static int qusb_phy_init(struct usb_phy *phy)
 	if (qphy->qusb_phy_init_seq)
 		qusb_phy_write_seq(qphy->base, qphy->qusb_phy_init_seq,
 				qphy->init_seq_len, 0);
+
+	if (tune) {
+		/*
+		 * the format of tune is 0xAABBCCDD
+		 * 0xAA is for tune1 and 0xDD is for tune4
+		 */
+		t1 = tune >> 24;
+		t2 = tune >> 16 & 0xFF;
+		t3 = tune >> 8 & 0xFF;
+		t4 = tune & 0xFF;
+
+		pr_info("%s: tune is 0x%x\n", __func__, tune);
+		pr_info("%s: set tune1 to 0x%x\n", __func__, t1);
+		pr_info("%s: set tune2 to 0x%x\n", __func__, t2);
+		pr_info("%s: set tune3 to 0x%x\n", __func__, t3);
+		pr_info("%s: set tune4 to 0x%x\n", __func__, t4);
+
+		/* Program tuning parameters for PHY */
+		writel_relaxed(t1, qphy->base + QUSB2PHY_PORT_TUNE1);
+		writel_relaxed(t2, qphy->base + QUSB2PHY_PORT_TUNE2);
+		writel_relaxed(t3, qphy->base + QUSB2PHY_PORT_TUNE3);
+		writel_relaxed(t4, qphy->base + QUSB2PHY_PORT_TUNE4);
+	}
 
 	/*
 	 * Check for EFUSE value only if tune2_efuse_reg is available

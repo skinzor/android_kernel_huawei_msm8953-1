@@ -1978,7 +1978,9 @@ static int dwc3_gadget_vbus_draw(struct usb_gadget *g, unsigned mA)
 
 	dwc->vbus_draw = mA;
 	dev_dbg(dwc->dev, "Notify controller from %s. mA = %d\n", __func__, mA);
+	if (!dwc->no_set_vbus_power || (mA > 2)) {
 	dwc3_notify_event(dwc, DWC3_CONTROLLER_SET_CURRENT_DRAW_EVENT, 0);
+	}
 	return 0;
 }
 
